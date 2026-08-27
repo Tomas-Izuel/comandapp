@@ -1,0 +1,52 @@
+import type { Metadata } from 'next'
+import { notFound } from 'next/navigation'
+import { getStoreBySlug } from '@/models/store.model'
+import { buildThemeCss, themeClass } from '@/lib/theme'
+import { CartProvider } from '@/lib/cart'
+import { StoreChrome } from '@/views/storefront/store-chrome'
+
+/**
+ * `generateMetadata`, este layout y `getStorefront` (para la page) llaman
+ * los tres a `getStoreBySlug` — la misma función, sin alias intermedios
+ * (A-08). Falta que `store.model.ts` la envuelva en `React.cache()` para que
+ * la deduplicación entre los tres sea gratis (A-03); ese archivo no es de
+ * este slice, así que queda reportado en la entrega.
+ */
+export async function generateMetadata(props: LayoutProps<'/[store]'>): Promise<Metadata> {
+  const { store: slug } = await props.params
+  const store = await getStoreBySlug(slug)
+  if (!store) return { title: 'Local no encontrado' }
+  return {
+    title: store.name,
+    description: store.description ?? `Pedí online en ${store.name}, pagá y seguí tu pedido sin escribirle a nadie.`,
+    // El favicon subido por el local (F-08): antes se guardaba y nunca se
+    // usaba en ningún lado. La URL ya pasa por `assetUrl` en el schema de
+    // branding (http(s) estricto), así que es segura para un `<link>`.
+    icons: store.branding.favicon_url ? { icon: store.branding.favicon_url } : undefined,
+  }
+}
+
+/**
+ * Inyecta el tema del local antes de que llegue un solo pixel de contenido:
+ * `buildThemeCss` arma el <style> scopeado en `[data-store-theme]` y
+ * `themeClass` decide si ese scope corre en variant `dark`. Sin JS, sin
+ * flash — y a partir de acá todo shadcn se adapta solo.
+ */
+export default async function StoreLayout(props: LayoutProps<'/[store]'>) {
+  const { store: slug } = await props.params
+  const store = await getStoreBySlug(slug)
+  if (!store) notFound()
+
+  const themeCss = buildThemeCss(store.branding)
+  const themeCls = themeClass(store.branding)
+
+  return (
+    <div data-store-theme className={`${themeCls} bg-background text-foreground flex min-h-full flex-1 flex-col`}>
+      {/* CSS ya validado por brandingSchema en el modelo */}
+      <style dangerouslySetInnerHTML={{ __html: themeCss }} />
+      <CartProvider storeSlug={store.slug}>
+        <StoreChrome store={store}>{props.children}</StoreChrome>
+      </CartProvider>
+    </div>
+  )
+}

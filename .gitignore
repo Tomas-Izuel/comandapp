@@ -10,6 +10,16 @@
 !.yarn/releases
 !.yarn/versions
 
+# El gestor de este repo es npm (A-18 de la auditoría): package-lock.json es
+# el único lockfile que se trackea. Si algo genera el de otro gestor —un `bun
+# install` corrido a mano, un editor que dispara pnpm— que no vuelva a colarse
+# sin querer.
+bun.lock
+bun.lockb
+pnpm-lock.yaml
+pnpm-workspace.yaml
+yarn.lock
+
 # testing
 /coverage
 
@@ -32,6 +42,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +50,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Generado por el CLI de Supabase
+supabase/.temp/

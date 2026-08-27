@@ -1,0 +1,60 @@
+<!--
+  Plantilla del magic link del panel del local.
+
+  `{{ .TokenHash }}` (no `{{ .Token }}`) es lo que consume /admin/acceso/confirm
+  con verifyOtp. La plantilla por defecto de Supabase apunta a otra ruta y el
+  link no entra a ningún lado.
+
+  HTML de email: tablas y estilos en línea, sin flexbox ni grid. Outlook usa el
+  motor de Word y descarta casi todo lo moderno.
+-->
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+       style="background:#f6f6f4;margin:0;padding:32px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+  <tr>
+    <td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+             style="max-width:480px;background:#ffffff;border:1px solid #e4e4e0">
+        <tr>
+          <td style="background:#0a0a0a;padding:20px 28px">
+            <p style="margin:0;color:#ffffff;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;font-weight:600">
+              Panel del local
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:32px 28px 8px">
+            <h1 style="margin:0 0 12px;font-size:26px;line-height:1.15;color:#0a0a0a;font-weight:800">
+              Entrá a tu panel
+            </h1>
+            <p style="margin:0 0 24px;font-size:15px;line-height:1.55;color:#57534e">
+              Toc&aacute; el bot&oacute;n y entr&aacute;s directo. No hace falta contrase&ntilde;a.
+            </p>
+            <table cellpadding="0" cellspacing="0" role="presentation">
+              <tr>
+                <td style="background:#f97316">
+                  <a href="{{ .SiteURL }}/admin/acceso/confirm?token_hash={{ .TokenHash }}&type=email"
+                     style="display:inline-block;padding:14px 28px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none">
+                    Abrir el panel
+                  </a>
+                </td>
+              </tr>
+            </table>
+            <p style="margin:24px 0 0;font-size:13px;line-height:1.55;color:#78716c">
+              El link vence en una hora y sirve una sola vez. Si ya venci&oacute;, pedí uno nuevo en
+              <a href="{{ .SiteURL }}/admin/acceso" style="color:#0a0a0a;font-weight:700;text-decoration:underline">{{ .SiteURL }}/admin/acceso</a>.
+              Si no lo pediste, ignor&aacute; este mail: sin tocarlo no pasa nada.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 28px 28px;border-top:1px solid #e4e4e0">
+            <p style="margin:0;font-size:12px;line-height:1.5;color:#a8a29e">
+              Si el bot&oacute;n no funciona, copi&aacute; esta direcci&oacute;n en el navegador:<br>
+              <span style="color:#78716c;word-break:break-all">{{ .SiteURL }}/admin/acceso/confirm?token_hash={{ .TokenHash }}&amp;type=email</span>
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>

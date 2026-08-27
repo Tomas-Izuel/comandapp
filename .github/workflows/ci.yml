@@ -1,0 +1,106 @@
+name: CI
+
+# A-02 de la auditoría: el repo no tenía CI, ni un solo test, ni forma de que
+# tsc/eslint/build corrieran solos antes de mergear. Esto es el mínimo que
+# hubiera atajado varios de los otros hallazgos (A-17, A-18, drift de tipos).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Valores dummy, NO secretos reales. Alcanzan para que las validaciones Zod
+  # de src/lib/env.server.ts y src/lib/env.client.ts pasen (URLs bien
+  # formadas, strings no vacíos): el build de Next evalúa esos módulos aunque
+  # nunca llegue a abrir una conexión real a Supabase o Resend.
+  NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-publishable-key
+  SUPABASE_SECRET_KEY: ci-placeholder-secret-key
+  NEXT_PUBLIC_SITE_URL: http://localhost:3000
+  CRON_SECRET: ci-placeholder-cron-secret
+  WHATSAPP_PROVIDER: link
+
+jobs:
+  build:
+    name: typecheck · lint · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+
+      # `npm ci` respeta package-lock.json al pie de la letra (A-18: es el
+      # único lockfile trackeado, el gestor real de este repo es npm).
+      - run: npm ci
+
+      - run: npm run typecheck
+      - run: npm run lint
+
+      # Los tests que hablan con Postgres se saltean solos cuando el contenedor
+      # no está: acá corren los unitarios (schemas, dinero, zonas horarias,
+      # firma del webhook) y los de base van en el job de abajo, que sí levanta
+      # el stack.
+      - run: npm test
+
+      - run: npm run build
+
+  db-types:
+    name: migraciones · drift de database.types.ts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+
+      - run: npm ci
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # `supabase start` ya aplica las migraciones sobre una base nueva;
+      # `db reset` además corre el seed, igual que scripts/db-reset.sh, así
+      # que las migraciones se validan en las mismas condiciones que el flujo
+      # de desarrollo local.
+      - name: Levantar el stack local
+        run: npx supabase start
+
+      - name: Aplicar migraciones + seed (supabase db reset)
+        run: npx supabase db reset
+
+      # El drift entre database.types.ts y las migraciones es silencioso y
+      # venenoso (A-18): un campo que cambia de tipo en una migración no avisa
+      # en ningún lado hasta que algo explota en producción. Acá si difiere,
+      # falla.
+      - name: Regenerar tipos y compararlos contra lo commiteado
+        run: |
+          npx supabase gen types typescript --local --schema public > /tmp/database.types.generated.ts
+          if ! diff -q src/lib/supabase/database.types.ts /tmp/database.types.generated.ts > /dev/null; then
+            echo "::error::src/lib/supabase/database.types.ts está desactualizado respecto de las migraciones."
+            echo "Corré 'npm run db:types' localmente y commiteá el resultado. Diff:"
+            diff src/lib/supabase/database.types.ts /tmp/database.types.generated.ts || true
+            exit 1
+          fi
+          echo "database.types.ts coincide con el schema generado desde las migraciones."
+
+      # Con el stack arriba, los tests de tests/db/ dejan de saltearse: acá es
+      # donde se verifican de verdad los grants por columna, el trigger de
+      # transiciones y las RPCs. Son las invariantes que la auditoría encontró
+      # que vivían solo en TypeScript.
+      - name: Tests de invariantes de Postgres
+        run: npm test
+
+      - name: Parar el stack
+        if: always()
+        run: npx supabase stop
