@@ -761,6 +761,27 @@ export type Database = {
           },
         ]
       }
+      rate_limits: {
+        Row: {
+          bucket: string
+          count: number
+          subject: string
+          window_start: string
+        }
+        Insert: {
+          bucket: string
+          count?: number
+          subject: string
+          window_start: string
+        }
+        Update: {
+          bucket?: string
+          count?: number
+          subject?: string
+          window_start?: string
+        }
+        Relationships: []
+      }
       signup_allowlist: {
         Row: {
           created_at: string
@@ -1152,6 +1173,19 @@ export type Database = {
       cleanup_old_records: {
         Args: { p_audit_days?: number; p_event_days?: number }
         Returns: Json
+      }
+      consume_rate_limit: {
+        Args: {
+          p_bucket: string
+          p_limit: number
+          p_subject: string
+          p_window_seconds: number
+        }
+        Returns: {
+          allowed: boolean
+          count: number
+          retry_after_seconds: number
+        }[]
       }
       courier_advance_order: {
         Args: { p_collected?: boolean; p_order_id: number; p_status: string }
