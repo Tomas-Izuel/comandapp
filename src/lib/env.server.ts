@@ -19,7 +19,20 @@ const serverSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.url(),
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
   SUPABASE_SECRET_KEY: z.string().min(1),
+  /**
+   * El origen del APEX, siempre. Nunca el de una tienda: `src/lib/urls.ts` es
+   * el único lugar que decide cuándo un slug va como subdominio o como path,
+   * y lo hace derivando el host de ESTA variable, no leyéndola directo.
+   */
   NEXT_PUBLIC_SITE_URL: z.url(),
+  /**
+   * Cómo se sirve la vitrina de una tienda: `subdomain` (`<slug>.<apex>`) o
+   * `path` (`<apex>/<slug>`). Default `path` a propósito — en local y en
+   * preview nadie la setea y el comportamiento no cambia respecto de hoy. Se
+   * setea en `subdomain` solo en Production, una vez que el wildcard DNS de
+   * `comandapp.ar` esté andando (ver `src/lib/urls.ts`).
+   */
+  NEXT_PUBLIC_STORE_HOST_MODE: z.enum(['subdomain', 'path']).default('path'),
 
   WHATSAPP_PROVIDER: z.enum(['link', 'cloud']).default('link'),
   WHATSAPP_CLOUD_PHONE_ID: z.string().optional(),
@@ -38,6 +51,21 @@ const serverSchema = z.object({
   WHATSAPP_CLOUD_TEMPLATE_CANCELLED: z.string().optional(),
 
   CRON_SECRET: z.string().min(1),
+
+  /**
+   * Kill-switch del rate limiting. En `false`, `consumeRateLimit` devuelve
+   * siempre `allowed` sin tocar la base.
+   *
+   * Existe porque el limitador se mete en el camino de compra, y ahí un falso
+   * positivo es plata perdida y un cliente enojado. Si una calibración sale
+   * mal en producción —un balde demasiado ajustado, un sujeto mal
+   * normalizado— la respuesta tiene que ser una variable de entorno y un
+   * redeploy, no un hotfix bajo presión sobre el código que está cortando
+   * ventas.
+   *
+   * Default `true`: apagado por accidente es peor que prendido por accidente.
+   */
+  RATE_LIMIT_ENABLED: z.enum(['true', 'false']).default('true'),
 
   /**
    * Clave AES-256 (32 bytes en base64) para cifrar el access token y el webhook
