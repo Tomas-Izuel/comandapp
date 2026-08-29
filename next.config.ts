@@ -115,12 +115,13 @@ const remotePatterns: NonNullable<NextConfig['images']>['remotePatterns'] = [
  *
  * Las cuatro rutas de `/[store]/*` se listan explícitas (nada de comodín
  * `*`/grupo opcional en el patrón): son las únicas que existen hoy, y la
- * exclusión `(?!admin$|backoffice$|api$|mis-pedidos$|pedido$)` en el segmento
- * `:store` es la que garantiza que esto NUNCA matchee `/admin`, `/backoffice`,
- * `/api/*`, `/mis-pedidos` ni `/pedido/*` — aunque nunca vaya a existir una
- * tienda con esos slugs (`RESERVED_SLUGS` en `platform.schema.ts` los
- * prohíbe), el matching de headers de Next es sobre la FORMA de la URL, no
- * sobre qué page la termina sirviendo.
+ * exclusión de `NOT_RESERVED_STORE_SEGMENT` en el segmento `:store` es la que
+ * garantiza que esto NUNCA matchee `/admin`, `/backoffice`, `/api/*`,
+ * `/mis-pedidos` ni `/pedido/*` — aunque nunca vaya a existir una tienda con
+ * esos slugs (`RESERVED_SLUGS` en `platform.schema.ts` los prohíbe), el
+ * matching de headers de Next es sobre la FORMA de la URL, no sobre qué page
+ * la termina sirviendo. Ese mismo símbolo lo reusa el redirect apex→subdominio
+ * de subdominio-por-local (T3): una sola copia, no dos listas que divergen.
  */
 /**
  * OJO AL AGREGAR EL CSP COMPLETO que sugiere el comentario de arriba
@@ -133,8 +134,36 @@ const remotePatterns: NonNullable<NextConfig['images']>['remotePatterns'] = [
  * —verificado con curl: la respuesta trae UN solo header CSP— pero el día que
  * crezca, esto es el lugar donde se rompe en silencio.
  */
+/**
+ * Segmento `:store` que NO puede ser una ruta del apex — compartido entre
+ * `previewFrameHeaders()` de acá abajo y el redirect apex→subdominio de
+ * `redirects()` (subdominio-por-local, T3). Una sola copia a propósito: el
+ * criterio de aceptación de T3 exige que las dos usen el MISMO símbolo, no
+ * dos listas que puedan divergir con el tiempo.
+ *
+ * **Bug encontrado y corregido al unificar**: la forma anterior de
+ * `previewFrameHeaders()` (`(?!admin$|backoffice$|api$|mis-pedidos$|pedido$)[^/]+`,
+ * llamada `notReserved` ahí) anclaba el `$` de cada alternativa al FINAL DE
+ * TODA LA URL, no al final del segmento. Eso funcionaba para
+ * `/:store(${notReserved})` sola (ahí el segmento SÍ es lo último de la URL),
+ * pero en `/:store(${notReserved})/carrito` el `$` nunca matcheaba con
+ * `/admin/carrito` de por medio, así que la exclusión NO corría para las tres
+ * formas con sufijo (`/carrito`, `/checkout`, `/producto/:id`). Verificado con
+ * Node: `new RegExp('^/(?<store>' + notReserved + ')/carrito$').test('/admin/carrito')`
+ * daba `true` con el patrón viejo. La forma de abajo ancla contra el
+ * segmento (`/` o fin de URL), no contra el final absoluto, así que excluye
+ * `admin` en las cuatro formas por igual y sigue aceptando cualquier slug
+ * real (`administracion`, `pedidos-ya`) que solo empieza igual.
+ *
+ * Lista extendida respecto de la que traía `previewFrameHeaders()`: T3 suma
+ * `legal`, `repartidor`, `_next`, `favicon.ico`, `robots.txt` y `sitemap.xml`
+ * porque el redirect apex→subdominio cubre más superficie del apex que la
+ * vista previa de marca.
+ */
+const NOT_RESERVED_STORE_SEGMENT =
+  '(?!(?:admin|backoffice|api|mis-pedidos|pedido|legal|repartidor|_next|favicon\\.ico|robots\\.txt|sitemap\\.xml)(?:/|$))[^/]+'
+
 function previewFrameHeaders() {
-  const notReserved = '(?!admin$|backoffice$|api$|mis-pedidos$|pedido$)[^/]+'
   const previewHeaders = [
     { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
     { key: 'Content-Security-Policy', value: "frame-ancestors 'self'" },
@@ -142,10 +171,10 @@ function previewFrameHeaders() {
   const has = [{ type: 'query' as const, key: 'preview', value: 'brand' }]
 
   return [
-    { source: `/:store(${notReserved})`, has, headers: previewHeaders },
-    { source: `/:store(${notReserved})/carrito`, has, headers: previewHeaders },
-    { source: `/:store(${notReserved})/checkout`, has, headers: previewHeaders },
-    { source: `/:store(${notReserved})/producto/:id`, has, headers: previewHeaders },
+    { source: `/:store(${NOT_RESERVED_STORE_SEGMENT})`, has, headers: previewHeaders },
+    { source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/carrito`, has, headers: previewHeaders },
+    { source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/checkout`, has, headers: previewHeaders },
+    { source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/producto/:id`, has, headers: previewHeaders },
   ]
 }
 
@@ -180,6 +209,165 @@ async function headers() {
       headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
     },
     ...previewFrameHeaders(),
+  ]
+}
+
+/**
+ * Routing por host — subdominio por local (T3 de
+ * `docs/pipelines/2026-08-29-subdominio-por-local/`).
+ *
+ * Decisión ya tomada por el dueño del producto, no se reabre acá: el mapeo
+ * `<slug>.comandapp.ar` → `/[store]` vive en ESTE archivo (`beforeFiles`), no
+ * en `proxy.ts` ni en `vercel.json`. El motivo completo está en
+ * `00-architecture.md` §4.A; en resumen: `beforeFiles` es la única fase que la
+ * doc de Next documenta capaz de pisar un archivo de página real
+ * (`src/app/page.tsx` existe, y `la-birra.comandapp.ar/` tiene que servir
+ * `/[store]`, no la landing de la plataforma), y es la única forma testeable
+ * como dato en CI — con el flujo local fuera de alcance (§2.6 del mismo doc),
+ * esos tests de configuración son la única verificación previa a producción.
+ *
+ * Todo el gating es por `has: { type: 'host' }`, nunca por variable de
+ * entorno: este archivo se evalúa antes de que Next cargue los `.env` (mismo
+ * problema que ya sufrió `remotePatterns` más arriba). Consecuencia buscada:
+ * en `localhost` y en `*.vercel.app` (preview deployments) el host nunca
+ * matchea `comandapp.ar`, así que rewrite y redirects quedan inertes solos y
+ * el acceso path-based sigue funcionando sin ningún cambio.
+ */
+/**
+ * Host de un subdominio de tienda: UN solo label seguido de `.comandapp.ar`.
+ * `[^.]+` (sin punto) es lo que excluye `a.b.comandapp.ar` — un subdominio de
+ * subdominio no es una forma que la plataforma emite nunca, así que no hace
+ * falta que matchee nada.
+ *
+ * `has.value` de Next se prueba con `new RegExp('^' + value + '$')`
+ * (verificado en
+ * `next/dist/shared/lib/router/utils/prepare-destination.js`, función
+ * `matchHas`), o sea que está ANCLADO a los dos extremos del header `Host` —
+ * sin eso, `value` sin ancla matchearía como substring de cualquier host que
+ * *contenga* `comandapp.ar`, lo cual sería explotable armando un DNS propio.
+ * El grupo con nombre `(?<slug>...)` es lo que después se usa como `:slug` en
+ * el `destination` del rewrite.
+ */
+const STORE_HOST_PATTERN = '(?<slug>[^.]+)\\.comandapp\\.ar'
+
+/** Host del apex, exacto — ni `www.comandapp.ar` ni un subdominio de tienda. */
+const APEX_HOST_PATTERN = 'comandapp\\.ar'
+
+/**
+ * (a) Rewrite host→path, `beforeFiles`.
+ *
+ * Allowlist explícita de las cuatro formas que existen hoy bajo
+ * `src/app/[store]/` (`page.tsx`, `carrito/`, `checkout/`, `producto/[id]/`).
+ * **Nada de `source: '/:path*'`**: `beforeFiles` corre ANTES de resolver
+ * `_next/static` (doc del repo, líneas 94-95 de `rewrites.md`), así que un
+ * catch-all se lleva puestos los chunks de Turbopack, React nunca hidrata, y
+ * el síntoma se lee como "el diseño está roto en mobile" — el mismo modo de
+ * falla que `allowedDevOrigins` ya documenta más abajo en este archivo. Con
+ * cuatro `source` fijos (`/`, `/carrito`, `/checkout`, `/producto/:id`), nada
+ * que empiece con `/_next`, `/api`, `/pedido` o `/mis-pedidos` matchea jamás:
+ * no hace falta excluirlos a mano, la forma del `source` ya los deja afuera.
+ *
+ * `/pedido/*` y `/mis-pedidos` a propósito NO tienen entrada acá: tienen que
+ * seguir sirviéndose sin reescribir desde el host de tenant (mismo origen
+ * donde se armó el carrito), porque `clearResolvedOrderCart` vacía el
+ * `localStorage` del ORIGEN donde corre, y `localStorage` es por origen
+ * (`00-architecture.md` §2.2 y §5.1). Si el seguimiento volviera al apex, el
+ * carrito y la `idempotencyKey` de la compra ya resuelta quedarían vivos en
+ * el subdominio.
+ */
+function rewrites() {
+  const has = [{ type: 'host' as const, value: STORE_HOST_PATTERN }]
+
+  return {
+    beforeFiles: [
+      { source: '/', has, destination: '/:slug' },
+      { source: '/carrito', has, destination: '/:slug/carrito' },
+      { source: '/checkout', has, destination: '/:slug/checkout' },
+      { source: '/producto/:id', has, destination: '/:slug/producto/:id' },
+    ],
+  }
+}
+
+/**
+ * (b) Redirects, dos grupos — corren ANTES que el rewrite de arriba en el
+ * orden de Next (headers → redirects → proxy → `beforeFiles`), así que un
+ * request al apex nunca llega a evaluar la tabla de rewrites.
+ *
+ * **Grupo 1 — apex path-based → subdominio, 308.** Mismo origen canónico para
+ * toda tienda: sin esto, `comandapp.ar/la-birra` y `la-birra.comandapp.ar`
+ * servirían el mismo catálogo desde dos orígenes con dos `localStorage`
+ * (carrito y "mis pedidos") sin relación entre sí. `permanent: true` → 308,
+ * no 301: preserva el método (no que haga falta acá, pero es la garantía
+ * correcta para un link que un cliente puede reintentar).
+ *
+ * Dos guardas obligatorias en las CUATRO formas:
+ *   - `missing: [{ type: 'query', key: 'preview' }]` — el `<iframe>` de
+ *     `/admin/apariencia` embebe `/${slug}?preview=brand` **en el apex**
+ *     (mismo origen, ver `previewFrameHeaders()` más arriba) para poder
+ *     mostrar la vitrina real dentro del panel. Si esto redirigiera al
+ *     subdominio, el iframe pasaría a ser cross-origin y `frame-ancestors
+ *     'self'` lo bloquearía en el browser sin ningún error visible en la app
+ *     (`00-architecture.md` §2.3).
+ *   - `NOT_RESERVED_STORE_SEGMENT` en el segmento `:store` — sin esto,
+ *     `comandapp.ar/admin` calificaría como "tienda `admin`" y respondería
+ *     308 a `https://admin.comandapp.ar`, un host que ni siquiera puede
+ *     existir como tienda real (`RESERVED_SLUGS` lo prohíbe), rompiendo el
+ *     panel en el apex igual.
+ *
+ * **Grupo 2 — tenant → apex, 308**, para `/admin`, `/backoffice` y
+ * `/repartidor`. Es lo que hace CIERTA la premisa "los subdominios sirven
+ * solo tráfico anónimo" en vez de dejarla en un `RESERVED_SLUGS` que nadie
+ * verifica en runtime: si alguna vez alguien pega un link de panel con el
+ * host de una tienda, vuelve al apex en vez de intentar (y fallar) servir
+ * `/admin` bajo el rewrite del grupo (a) de arriba.
+ */
+function redirects() {
+  const apexHas = [{ type: 'host' as const, value: APEX_HOST_PATTERN }]
+  const noPreview = [{ type: 'query' as const, key: 'preview' }]
+  const tenantHas = [{ type: 'host' as const, value: STORE_HOST_PATTERN }]
+
+  return [
+    {
+      source: `/:store(${NOT_RESERVED_STORE_SEGMENT})`,
+      has: apexHas,
+      missing: noPreview,
+      permanent: true,
+      destination: 'https://:store.comandapp.ar',
+    },
+    {
+      source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/carrito`,
+      has: apexHas,
+      missing: noPreview,
+      permanent: true,
+      destination: 'https://:store.comandapp.ar/carrito',
+    },
+    {
+      source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/checkout`,
+      has: apexHas,
+      missing: noPreview,
+      permanent: true,
+      destination: 'https://:store.comandapp.ar/checkout',
+    },
+    {
+      source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/producto/:id`,
+      has: apexHas,
+      missing: noPreview,
+      permanent: true,
+      destination: 'https://:store.comandapp.ar/producto/:id',
+    },
+    { source: '/admin/:path*', has: tenantHas, permanent: true, destination: 'https://comandapp.ar/admin/:path*' },
+    {
+      source: '/backoffice/:path*',
+      has: tenantHas,
+      permanent: true,
+      destination: 'https://comandapp.ar/backoffice/:path*',
+    },
+    {
+      source: '/repartidor/:path*',
+      has: tenantHas,
+      permanent: true,
+      destination: 'https://comandapp.ar/repartidor/:path*',
+    },
   ]
 }
 
@@ -253,6 +441,8 @@ const nextConfig: NextConfig = {
     qualities: [75],
   },
   headers,
+  rewrites,
+  redirects,
 }
 
 /**
