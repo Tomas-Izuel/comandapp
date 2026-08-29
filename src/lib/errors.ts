@@ -59,6 +59,18 @@ export type ApiErrorBody = {
   field?: string
 }
 
+/**
+ * `headers` es opcional para no obligar a los ocho call sites existentes de
+ * `toApiError` (que hoy desestructuran solo `{ body, status }`) a cambiar por
+ * un campo que no usan. Es la forma menos invasiva de sacar el `Retry-After`
+ * del borde: agregar el campo en vez de romper la firma.
+ */
+export type ApiErrorResult = {
+  body: ApiErrorBody
+  status: number
+  headers?: Record<string, string>
+}
+
 const GENERIC = 'No pudimos procesar el pedido. Probá de nuevo en un momento.'
 
 /**
@@ -67,7 +79,23 @@ const GENERIC = 'No pudimos procesar el pedido. Probá de nuevo en un momento.'
  * `context` va al log del servidor para poder rastrear el fallo real sin que el
  * cliente vea nada de eso.
  */
-export function toApiError(err: unknown, context: string): { body: ApiErrorBody; status: number } {
+export function toApiError(err: unknown, context: string): ApiErrorResult {
+  // Antes de `isDomainError`: `RateLimitError` extiende `DomainError`, así que
+  // el chequeo genérico también sería `true` acá y nunca se llegaría a armar
+  // el header.
+  if (isRateLimitError(err)) {
+    return {
+      body: { error: err.message, ...(err.field ? { field: err.field } : {}) },
+      status: err.status,
+      // Un 429 sin este header obliga al cliente a adivinar cuándo reintentar,
+      // y lo que hace un cliente que adivina es reintentar en loop —
+      // exactamente lo que el límite vino a frenar. Entero ≥ 1 siempre:
+      // `Retry-After: 0` no es un valor válido de la especificación HTTP, y
+      // `consumeRateLimit` en algún camino de error puede devolver 0.
+      headers: { 'Retry-After': String(Math.max(1, Math.ceil(err.retryAfterSeconds))) },
+    }
+  }
+
   if (isDomainError(err)) {
     return { body: { error: err.message, ...(err.field ? { field: err.field } : {}) }, status: err.status }
   }
