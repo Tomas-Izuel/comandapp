@@ -228,8 +228,15 @@ export function ProductDrawer({
         precio + prep + grupos de opciones) apretado en 32rem; el editor de
         modificadores es lo que más gana, porque queda a todo el ancho nuevo
         del drawer en vez de compartirlo con la foto (ver el grid de abajo).
+
+        Los overrides llevan el mismo prefijo `data-[vaul-drawer-direction=
+        right]:` que el default de `DrawerContent` (ver el comentario ahí):
+        sin ese prefijo, `tailwind-merge` no reconoce que son la misma
+        utilidad y deja las dos clases, y encima el default gana en CSS por
+        especificidad (selector de atributo). Con el prefijo repetido, el
+        merge descarta el default y el ancho que se ve es este.
       */}
-      <DrawerContent className="w-full sm:max-w-lg lg:max-w-3xl">
+      <DrawerContent className="data-[vaul-drawer-direction=right]:w-full data-[vaul-drawer-direction=right]:sm:max-w-lg data-[vaul-drawer-direction=right]:lg:max-w-3xl">
         <DrawerHeader>
           <DrawerTitle>{mode === 'create' ? 'Nuevo producto' : 'Editar producto'}</DrawerTitle>
           <DrawerDescription>El precio y el tiempo de preparación los ve el cliente antes de pedir.</DrawerDescription>
@@ -259,7 +266,12 @@ export function ProductDrawer({
                 />
               </div>
 
-              <div className="flex flex-col gap-4">
+              {/* `min-w-0`: como ítem de un grid `1fr`, sin esto su ancho
+                  mínimo por default es el de su contenido más ancho (el
+                  select de categoría en `whitespace-nowrap`), y un nombre de
+                  categoría largo empujaría la columna entera más allá del
+                  1fr disponible en vez de truncar adentro suyo. */}
+              <div className="flex min-w-0 flex-col gap-4">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor={nameId}>Nombre</Label>
                   <Input
@@ -295,7 +307,7 @@ export function ProductDrawer({
                         value={field.value === null ? 'none' : String(field.value)}
                         onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}
                       >
-                        <SelectTrigger id={categorySelectId} className="h-10 w-full">
+                        <SelectTrigger id={categorySelectId} className="h-10 w-full min-w-0">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>

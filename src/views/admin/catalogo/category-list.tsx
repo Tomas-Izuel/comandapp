@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useId, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { ChevronDown, ChevronRight, ImageOff, Loader2, Pencil, Plus, UtensilsCrossed } from 'lucide-react'
@@ -73,7 +73,7 @@ export function CategoryList({
             </Button>
           }
         />
-      ) : (
+      ) : categories.length > 0 ? (
         /*
          * Topología ≥lg: dos columnas, no una grilla de tarjetas.
          *
@@ -89,11 +89,13 @@ export function CategoryList({
          * exactamente lo que necesita el encargado que retoma el catálogo
          * después de atender a alguien en el mostrador; y (2) más columnas de
          * información por fila de producto (ver `product-row.tsx`), no
-         * tarjetas. El índice solo aparece con categorías creadas: con cero
-         * no hay nada que indexar.
+         * tarjetas. El grid de dos columnas solo existe con categorías
+         * creadas: con cero no hay índice que poner en la primera, y el
+         * formulario de alta se renderiza aparte, a ancho completo (ver más
+         * abajo).
          */
         <div className="lg:grid lg:grid-cols-[16rem_1fr] lg:items-start lg:gap-6">
-          {categories.length > 0 ? <CategoryNavRail categories={categories} /> : null}
+          <CategoryNavRail categories={categories} />
           <div className="flex flex-col gap-4">
             {categories.map((category) => (
               <CategoryBand
@@ -125,6 +127,22 @@ export function CategoryList({
               </Button>
             )}
           </div>
+        </div>
+      ) : (
+        // Cero categorías pero `addingCategory` en true (se vino del EmptyState):
+        // sin nada que indexar, el grid de dos columnas no tiene sentido — el
+        // formulario ocupa el ancho de formulario del chasis, no los 16rem del
+        // índice que no existe.
+        <div className="max-w-(--admin-max-form)">
+          <NewCategoryForm
+            storeId={storeId}
+            position={categories.length}
+            onCreated={() => {
+              setAddingCategory(false)
+              router.refresh()
+            }}
+            onCancel={() => setAddingCategory(false)}
+          />
         </div>
       )}
 
@@ -196,6 +214,7 @@ function NewCategoryForm({
   const [name, setName] = useState('')
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  const errorId = useId()
 
   function handleCreate() {
     setError(null)
@@ -210,21 +229,35 @@ function NewCategoryForm({
   }
 
   return (
-    <div className="border-border flex flex-col gap-2 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center">
-      <Input
-        placeholder="Nombre de la categoría"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        className="h-10 flex-1"
-        autoFocus
-      />
-      {error ? <p className="text-destructive text-sm">{error}</p> : null}
+    <div className="border-border flex flex-col gap-2 rounded-lg border border-dashed p-3 sm:flex-row sm:items-start">
+      {/*
+       * El input y su error van en la misma columna: el mensaje cae debajo
+       * del campo, nunca como hermano suelto entre el input y los botones
+       * (en `sm:flex-row` eso lo metía horizontalmente entre los dos).
+       */}
+      <div className="flex flex-1 flex-col gap-1.5">
+        <Input
+          aria-label="Nombre de la categoría"
+          placeholder="Nombre de la categoría"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="h-11"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : undefined}
+          autoFocus
+        />
+        {error ? (
+          <p id={errorId} role="alert" className="text-destructive text-sm">
+            {error}
+          </p>
+        ) : null}
+      </div>
       <div className="flex gap-2">
-        <Button type="button" disabled={pending || !name.trim()} onClick={handleCreate} className="h-10 gap-1.5">
+        <Button type="button" disabled={pending || !name.trim()} onClick={handleCreate} className="gap-1.5">
           {pending ? <Loader2 className="size-4 animate-spin" /> : null}
           Crear
         </Button>
-        <Button type="button" variant="ghost" onClick={onCancel} className="h-10">
+        <Button type="button" variant="ghost" onClick={onCancel}>
           Cancelar
         </Button>
       </div>
