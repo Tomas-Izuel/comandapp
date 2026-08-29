@@ -5,7 +5,7 @@ import { headers } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 import { createClient, getCurrentUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { serverEnv } from '@/lib/env.server'
+import { apexUrl } from '@/lib/urls'
 import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
 import { formatDateTimeLong } from '@/lib/dates'
@@ -124,7 +124,11 @@ export async function requestMagicLinkAction(
     email: parsed.data,
     options: {
       shouldCreateUser: false,
-      emailRedirectTo: `${serverEnv().NEXT_PUBLIC_SITE_URL}${SURFACE_CONFIRM_PATH[surface]}`,
+      // El panel vive en el apex siempre: es la premisa de seguridad de
+      // "subdominio por local" (00-architecture.md §1). `apexUrl` nunca
+      // devuelve el host de una tienda, así que este link no puede terminar
+      // apuntando a un subdominio aunque el modo de host cambie.
+      emailRedirectTo: apexUrl(SURFACE_CONFIRM_PATH[surface]),
     },
   })
 

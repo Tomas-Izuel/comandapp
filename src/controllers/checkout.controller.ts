@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { after } from 'next/server'
-import { serverEnv } from '@/lib/env.server'
+import { storeUrl } from '@/lib/urls'
 import { buildDeliveryQuote } from '@/lib/delivery'
 import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
@@ -62,14 +62,16 @@ export type PriceQuote = { store: Store; priced: PricedCart; eta: EtaEstimate; d
  * (dirección del LOCAL, no del cliente) para que sepa adónde ir a buscarlo.
  */
 function toReceiptEmailVars(order: Order, store: Pick<Store, 'name' | 'slug' | 'address'>, paymentPending: boolean): EmailVars {
-  const site = serverEnv().NEXT_PUBLIC_SITE_URL
   return {
     customerName: order.customerName,
     storeName: store.name,
     storeSlug: store.slug,
     storeAddress: store.address,
     shortCode: order.shortCode,
-    trackingUrl: `${site}/pedido/${order.publicToken}`,
+    // El seguimiento vive en el SUBDOMINIO de la tienda del pedido: es donde
+    // vive el carrito que `clearResolvedOrderCart` tiene que vaciar al volver
+    // de pagar (00-architecture.md §2.2).
+    trackingUrl: storeUrl(store.slug, `/pedido/${order.publicToken}`),
     etaMinutes: order.etaMinutes ?? undefined,
     paymentMethod: order.paymentMethod,
     paymentPending,
@@ -105,9 +107,8 @@ async function sendReceiptEmail(order: Order, store: Pick<Store, 'name' | 'slug'
  * fuera de la página de seguimiento: la plantilla `order_confirmed` existía
  * en el port desde el día uno y nadie la disparaba (P-18).
  */
-async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'name'>): Promise<void> {
+async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'name' | 'slug'>): Promise<void> {
   try {
-    const site = serverEnv().NEXT_PUBLIC_SITE_URL
     await getNotifier().notify({
       storeId: order.storeId,
       orderId: order.id,
@@ -117,7 +118,7 @@ async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'name'>): 
         customerName: order.customerName,
         storeName: store.name,
         shortCode: order.shortCode,
-        trackingUrl: `${site}/pedido/${order.publicToken}`,
+        trackingUrl: storeUrl(store.slug, `/pedido/${order.publicToken}`),
         etaMinutes: order.etaMinutes ?? undefined,
       },
     })
@@ -185,6 +186,7 @@ async function createCheckoutForOrder(order: Order, store: Store): Promise<Check
     orderToken: order.publicToken,
     orderShortCode: order.shortCode,
     storeName: store.name,
+    storeSlug: store.slug,
     items,
     payerName: order.customerName,
     payerPhoneE164: order.customerPhoneE164,

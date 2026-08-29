@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { resolveAdminSession, getPaymentConnectionStatus } from '@/controllers/admin.controller'
-import { serverEnv } from '@/lib/env.server'
+import { apexUrl } from '@/lib/urls'
 import { PageFrame } from '@/views/admin/page-frame'
 import { PaymentForm } from '@/views/admin/pagos/payment-form'
 
@@ -9,7 +9,9 @@ export default async function AdminPaymentsPage() {
   if (session.status !== 'ok') redirect('/admin/acceso')
 
   const status = await getPaymentConnectionStatus(session.store.id)
-  const webhookUrl = `${serverEnv().NEXT_PUBLIC_SITE_URL}/api/webhooks/mercadopago?store_id=${session.store.id}`
+  // Server-to-server: el webhook queda siempre en el apex, independiente del
+  // wildcard de subdominio (00-architecture.md §3.2).
+  const webhookUrl = apexUrl(`/api/webhooks/mercadopago?store_id=${session.store.id}`)
 
   return (
     <PageFrame

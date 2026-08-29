@@ -4,7 +4,7 @@ import { cache } from 'react'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient, getCurrentUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { serverEnv } from '@/lib/env.server'
+import { apexUrl } from '@/lib/urls'
 import { log } from '@/lib/log'
 import { DomainError } from '@/lib/errors'
 import { sendOwnerInviteEmail } from '@/services/notifications/email/owner-invite'
@@ -340,7 +340,8 @@ async function generateOwnerInviteLink(admin: SupabaseClient<Database>, email: s
     throw new Error(`No se pudo generar el link de invitación: ${error?.message ?? 'error desconocido'}`)
   }
 
-  const url = new URL('/admin/acceso/confirm', serverEnv().NEXT_PUBLIC_SITE_URL)
+  // El panel del dueño vive en el apex siempre (00-architecture.md §1).
+  const url = new URL(apexUrl('/admin/acceso/confirm'))
   url.searchParams.set('token_hash', data.properties.hashed_token)
   url.searchParams.set('type', 'email')
   return url.toString()

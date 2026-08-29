@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { MercadoPagoConfig, MPNotFoundError, Payment, PaymentRefund, Preference } from 'mercadopago'
-import { serverEnv } from '@/lib/env.server'
+import { apexUrl, storeUrl } from '@/lib/urls'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { centsToDecimal, decimalToCents, sumCents } from '@/lib/money'
 import { decryptSecret } from '@/lib/crypto/secrets'
@@ -151,6 +151,7 @@ export const mercadopagoAdapter: PaymentProvider = {
     orderToken,
     orderShortCode,
     storeName,
+    storeSlug,
     items,
     payerName,
     totalCents,
@@ -171,9 +172,10 @@ export const mercadopagoAdapter: PaymentProvider = {
 
     const accessToken = await requireAccessToken(storeId)
     const preference = new Preference(clientFor(accessToken))
-    const env = serverEnv()
 
-    const trackingUrl = `${env.NEXT_PUBLIC_SITE_URL}/pedido/${orderToken}`
+    // Al SUBDOMINIO de la tienda, no al apex: es el regreso del cliente
+    // después de pagar, y ahí corre `clearResolvedOrderCart` (§2.2).
+    const trackingUrl = storeUrl(storeSlug, `/pedido/${orderToken}`)
     const createdAt = new Date()
     const expiresAtDate = new Date(createdAt.getTime() + expiresInMinutes * 60_000)
 
@@ -194,8 +196,10 @@ export const mercadopagoAdapter: PaymentProvider = {
         auto_return: 'approved',
         // store_id va en la query del webhook para que la ruta sepa con qué
         // credenciales validar la firma antes de tocar la base — el body de
-        // la notificación de MP no trae la tienda.
-        notification_url: `${env.NEXT_PUBLIC_SITE_URL}/api/webhooks/mercadopago?store_id=${storeId}`,
+        // la notificación de MP no trae la tienda. Al APEX, a propósito: es
+        // server-to-server (nunca lo ve un browser) y queda fuera del
+        // hostname del tenant, distinto del host de `back_urls`.
+        notification_url: apexUrl(`/api/webhooks/mercadopago?store_id=${storeId}`),
         // El short_code ("A7K2") no le dice nada al cliente en el resumen de
         // la tarjeta y genera contracargos por "no reconozco este cargo": el
         // nombre del local sí. 22 chars es lo que MP trunca en el extracto.

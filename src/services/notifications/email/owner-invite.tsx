@@ -3,6 +3,7 @@ import 'server-only'
 import { createHash } from 'node:crypto'
 import { Resend } from 'resend'
 import { serverEnv } from '@/lib/env.server'
+import { apexUrl } from '@/lib/urls'
 import { log } from '@/lib/log'
 import StoreOwnerInviteEmail from '@/emails/store-owner-invite'
 
@@ -63,7 +64,9 @@ export async function sendOwnerInviteEmail(p: {
         from: `${env.RESEND_FROM_NAME} <${env.RESEND_FROM_EMAIL}>`,
         to: [p.to],
         subject: `Entrá al panel de ${p.storeName}`,
-        react: <StoreOwnerInviteEmail storeName={p.storeName} inviteUrl={p.inviteUrl} siteUrl={env.NEXT_PUBLIC_SITE_URL} />,
+        // El panel vive en el apex siempre: `siteUrl` arma el link a
+        // `/admin/acceso` para pedir un link nuevo si este venció.
+        react: <StoreOwnerInviteEmail storeName={p.storeName} inviteUrl={p.inviteUrl} siteUrl={apexUrl('/')} />,
       },
       { idempotencyKey },
     )

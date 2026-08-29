@@ -55,6 +55,16 @@ export interface PaymentProvider {
     orderShortCode: string
     /** Nombre del local: es lo que el cliente reconoce en el resumen de la tarjeta. */
     storeName: string
+    /**
+     * El adapter arma con esto los `back_urls` de la preferencia: tienen que
+     * caer en el SUBDOMINIO de la tienda, nunca en el apex. El cliente vuelve
+     * ahí después de pagar y en esa página corre `clearResolvedOrderCart`, que
+     * vacía el carrito y descarta la clave de idempotencia — si el regreso
+     * cayera en otro origen, `localStorage` (por origen) nunca vería ese
+     * vaciado y el cliente quedaría con un carrito viejo y la misma
+     * `idempotencyKey` (00-architecture.md §2.2).
+     */
+    storeSlug: string
     items: { name: string; quantity: number; unitPriceCents: number }[]
     payerName: string
     payerPhoneE164: string

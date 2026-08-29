@@ -3,6 +3,7 @@ import 'server-only'
 import { createHash } from 'node:crypto'
 import { Resend } from 'resend'
 import { serverEnv } from '@/lib/env.server'
+import { apexUrl } from '@/lib/urls'
 import { log } from '@/lib/log'
 import StoreCourierInviteEmail from '@/emails/store-courier-invite'
 
@@ -75,12 +76,15 @@ export async function sendCourierInviteEmail(p: {
         from: `${env.RESEND_FROM_NAME} <${env.RESEND_FROM_EMAIL}>`,
         to: [p.to],
         subject: `Te sumaron como repartidor de ${p.storeName}`,
+        // El panel vive en el apex siempre, igual que en `owner-invite.tsx`
+        // (sin uso hoy en esta plantilla, ver el comentario de `siteUrl` en
+        // `StoreCourierInviteVars`).
         react: (
           <StoreCourierInviteEmail
             storeName={p.storeName}
             courierName={p.courierName}
             inviteUrl={p.inviteUrl}
-            siteUrl={env.NEXT_PUBLIC_SITE_URL}
+            siteUrl={apexUrl('/')}
           />
         ),
       },

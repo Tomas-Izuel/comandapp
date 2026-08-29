@@ -3,7 +3,7 @@ import 'server-only'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient, getCurrentUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { serverEnv } from '@/lib/env.server'
+import { apexUrl } from '@/lib/urls'
 import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
 import { requireStoreMembership, getStoreById } from '@/models/store.model'
@@ -78,7 +78,10 @@ async function generateCourierInviteLink(admin: SupabaseClient<Database>, email:
     throw new Error(`No se pudo generar el link de invitación: ${error?.message ?? 'error desconocido'}`)
   }
 
-  const url = new URL('/admin/acceso/confirm', serverEnv().NEXT_PUBLIC_SITE_URL)
+  // El panel (y el portal del repartidor, que cuelga de la misma ruta de
+  // confirmación) viven en el apex siempre: `apexUrl` nunca devuelve el host
+  // de una tienda.
+  const url = new URL(apexUrl('/admin/acceso/confirm'))
   url.searchParams.set('token_hash', data.properties.hashed_token)
   url.searchParams.set('type', 'email')
   url.searchParams.set('next', '/repartidor')

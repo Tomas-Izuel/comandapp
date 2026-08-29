@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { log } from '@/lib/log'
-import { serverEnv } from '@/lib/env.server'
+import { storeUrl } from '@/lib/urls'
 import { getOrderWithStoreById } from '@/models/order.model'
 import { getNotifier, type NotificationResult } from '@/services/notifications'
 import { getEmailSender } from '@/services/notifications/email'
@@ -55,7 +55,8 @@ export async function dispatchReadyNotification(
   // auto-listo) pasan por esta función.
   if (order.deliveryMethod === 'delivery') return null
 
-  const trackingUrl = `${serverEnv().NEXT_PUBLIC_SITE_URL}/pedido/${order.publicToken}`
+  // Al SUBDOMINIO de la tienda de ESTE pedido, nunca al apex (§2.2).
+  const trackingUrl = storeUrl(store.slug, `/pedido/${order.publicToken}`)
 
   const notification = await getNotifier().notify({
     storeId: order.storeId,
@@ -105,7 +106,7 @@ export async function dispatchOnTheWayNotification(
   }
 
   const { order, store } = found
-  const trackingUrl = `${serverEnv().NEXT_PUBLIC_SITE_URL}/pedido/${order.publicToken}`
+  const trackingUrl = storeUrl(store.slug, `/pedido/${order.publicToken}`)
 
   return getNotifier().notify({
     storeId: order.storeId,
