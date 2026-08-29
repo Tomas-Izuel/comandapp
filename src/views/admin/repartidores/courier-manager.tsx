@@ -15,7 +15,17 @@ import type { CourierRow as CourierRowType } from '@/models/types'
  * mano) y el listado abajo, con el estado de onboarding cuando todavía no
  * hay nadie.
  */
-export function CourierManager({ storeId, couriers }: { storeId: number; couriers: CourierRowType[] }) {
+export function CourierManager({
+  storeId,
+  couriers,
+  currency,
+  courierCollects,
+}: {
+  storeId: number
+  couriers: CourierRowType[]
+  currency: string
+  courierCollects: boolean
+}) {
   const router = useRouter()
 
   return (
@@ -36,7 +46,13 @@ export function CourierManager({ storeId, couriers }: { storeId: number; courier
         ) : (
           <div className="divide-border divide-y">
             {couriers.map((courier) => (
-              <CourierRow key={courier.id} storeId={storeId} courier={courier} />
+              <CourierRow
+                key={courier.id}
+                storeId={storeId}
+                courier={courier}
+                currency={currency}
+                courierCollects={courierCollects}
+              />
             ))}
           </div>
         )}

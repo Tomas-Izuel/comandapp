@@ -135,7 +135,10 @@ async function sendCourierInviteNoThrow(
 /**
  * Fila cruda de la RPC `store_couriers` (ya viene en camelCase: la función la
  * arma con `jsonb_agg` sobre columnas aliasadas a mano, ver
- * `20260828130000_delivery.sql`).
+ * `20260828130000_delivery.sql`). Las cinco métricas de entregas/cobro
+ * (`deliveriesToday`, `deliveries30d`, `avgDeliveryMinutes`,
+ * `collectedTodayCents`, `collected30dCents`) se sumaron en
+ * `20260829120000_courier_stats.sql`, con el mismo alias en camelCase.
  */
 type CourierRpcRow = CourierRow
 

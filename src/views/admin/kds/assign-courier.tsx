@@ -6,7 +6,7 @@ import { Bike, Loader2 } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { isConflict } from '@/lib/conflict'
 import { assignCourierAction, fetchStoreCouriersAction } from '@/controllers/kitchen.actions'
-import type { CourierRow, Order } from '@/models/types'
+import type { CourierOption, Order } from '@/models/types'
 
 /** Valor del ítem "sin asignar" en el select: `''` no sirve, Radix lo trata como vacío/no seleccionado. */
 const UNASSIGNED = 'none'
@@ -17,7 +17,7 @@ const UNASSIGNED = 'none'
  * "libre" — en ese orden es como el encargado decide a quién asignarle el
  * próximo pedido.
  */
-function courierLoadLabel(courier: CourierRow): string {
+function courierLoadLabel(courier: CourierOption): string {
   if (courier.onTheWayOrders > 0) return 'repartiendo'
   if (courier.assignedOrders > 0) return `${courier.assignedOrders} ${courier.assignedOrders === 1 ? 'pedido' : 'pedidos'}`
   return 'libre'
@@ -50,7 +50,7 @@ export function AssignCourier({
   /** Mismo camino que un 409 de cambio de estado: refresca en vez de reintentar contra una tarjeta vieja. */
   onRefreshNeeded: () => void
 }) {
-  const [couriers, setCouriers] = useState<CourierRow[] | null>(null)
+  const [couriers, setCouriers] = useState<CourierOption[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [pending, startTransition] = useTransition()

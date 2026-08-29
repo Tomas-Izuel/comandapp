@@ -15,10 +15,15 @@ export default async function RepartidoresPage() {
   return (
     <PageFrame
       title="Repartidores"
-      description="Invitá a quienes reparten los pedidos de delivery de tu local. Solo vos, como dueño, podés darlos de alta o de baja."
+      description="Invitá a quienes reparten tus pedidos de delivery y mirá cuánto entregó cada uno, cuánto tarda y cuánto tiene cobrado en la puerta. Solo vos, como dueño, podés darlos de alta o de baja."
       width="table"
     >
-      <CourierManager storeId={session.storeId} couriers={session.couriers} />
+      <CourierManager
+        storeId={session.storeId}
+        couriers={session.couriers}
+        currency={session.currency}
+        courierCollects={session.courierCollects}
+      />
     </PageFrame>
   )
 }

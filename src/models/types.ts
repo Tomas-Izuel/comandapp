@@ -137,23 +137,64 @@ export type StoreMember = {
 }
 
 /**
- * Fila del listado de repartidores del dueño. Sale de la RPC `store_couriers`,
- * que es SECURITY DEFINER porque necesita `auth.users.last_sign_in_at` — igual
- * que `owner_email` en `platform_stores`.
+ * Lo mínimo para elegir a quién asignarle un pedido: quién es y cuánto tiene
+ * encima ahora.
+ *
+ * Existe separado de `CourierRow` porque los dos caminos que leen repartidores
+ * divergieron de verdad, no por gusto. El selector del KDS lo opera CUALQUIER
+ * staff y sale de `store_members` con el cliente RLS
+ * (`listCouriersForAssignment`), que no puede tocar `auth.users` ni el
+ * historial de entregas. Meter esos campos acá obligaría a inventarlos —
+ * `email: ''`, métricas en cero— y un cero inventado en una columna de plata es
+ * exactamente la clase de dato que después alguien lee como si fuera real.
  */
-export type CourierRow = {
+export type CourierOption = {
   id: number
-  userId: string
   displayName: string
-  email: string
   isActive: boolean
-  invitedAt: string | null
-  /** null = lo invitaron y todavía no entró nunca. */
-  lastSignInAt: string | null
   /** Pedidos en `ready` u `on_the_way` que tiene asignados. */
   assignedOrders: number
   /** > 0 = está repartiendo ahora mismo. */
   onTheWayOrders: number
+}
+
+/**
+ * Fila del padrón de repartidores del dueño. Sale de la RPC `store_couriers`,
+ * que es SECURITY DEFINER porque necesita `auth.users.last_sign_in_at` — igual
+ * que `owner_email` en `platform_stores`— y agrega las métricas por repartidor.
+ */
+export type CourierRow = CourierOption & {
+  userId: string
+  email: string
+  invitedAt: string | null
+  /** null = lo invitaron y todavía no entró nunca. */
+  lastSignInAt: string | null
+  /**
+   * Entregas cerradas hoy, cortadas por el día del LOCAL (`stores.timezone`),
+   * no por el del servidor: un turno de noche cruza la medianoche UTC.
+   */
+  deliveriesToday: number
+  /** Entregas cerradas en los últimos 30 días. */
+  deliveries30d: number
+  /**
+   * Promedio de `on_the_way -> delivered` en minutos, últimos 30 días. Mide al
+   * repartidor, no a la cocina.
+   *
+   * `null` = todavía no hay ni una entrega con `on_the_way_at` sellado (un
+   * repartidor nuevo, o entregas cerradas desde el mostrador sin pasar por el
+   * portal). No confundir con `0`, que es un promedio REAL de menos de un
+   * minuto: son dos cosas distintas y la UI las dice distinto.
+   */
+  avgDeliveryMinutes: number | null
+  /**
+   * Plata que cobró en la puerta hoy, en centavos. Es un arqueo de caja —lo
+   * que tiene encima al cerrar el turno—, no una métrica de ventas: cuenta
+   * solo los pedidos que él marcó entregados con cobro
+   * (`payment_ref = 'courier'`).
+   */
+  collectedTodayCents: number
+  /** Lo mismo, acumulado en los últimos 30 días. */
+  collected30dCents: number
 }
 
 /**

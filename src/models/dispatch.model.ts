@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server'
 import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
 import { navigationUrlFor } from '@/lib/delivery'
-import type { CourierOrder, CourierRow, OrderDeliveryAddress } from '@/models/types'
+import type { CourierOption, CourierOrder, OrderDeliveryAddress } from '@/models/types'
 
 const CTX = 'dispatch'
 
@@ -175,17 +175,17 @@ export async function advanceAssignedOrder(input: {
  * En vez de eso, se lee `store_members` con el cliente RLS (la policy
  * `store_members_read` deja ver a cualquier miembro de la tienda, courier
  * incluido) y se cuenta la carga por separado contra `orders`, que el staff
- * también puede leer. Lo que este camino NO puede traer es `email` ni
- * `lastSignInAt`: viven en `auth.users`, fuera del alcance de PostgREST, y acá
- * no hace falta — el selector del KDS solo necesita nombre y carga, no el
- * padrón completo de repartidores.
+ * también puede leer. El tipo de retorno es `CourierOption`, no `CourierRow`:
+ * ese camino no puede traer `email` ni `lastSignInAt` (viven en `auth.users`,
+ * fuera del alcance de PostgREST) ni el historial de entregas, así que el
+ * contrato ya dice que acá no están en vez de inventarlos vacíos.
  */
-export async function listCouriersForAssignment(storeId: number): Promise<CourierRow[]> {
+export async function listCouriersForAssignment(storeId: number): Promise<CourierOption[]> {
   const supabase = await createClient()
 
   const { data: members, error: membersError } = await supabase
     .from('store_members')
-    .select('id, user_id, display_name, is_active, invited_at')
+    .select('id, display_name, is_active')
     .eq('store_id', storeId)
     .eq('role', 'courier')
     .order('display_name', { ascending: true })
@@ -221,13 +221,8 @@ export async function listCouriersForAssignment(storeId: number): Promise<Courie
 
   return members.map((m) => ({
     id: m.id,
-    userId: m.user_id,
     displayName: m.display_name ?? '',
-    // No disponibles por este camino: ver el comentario de la función.
-    email: '',
-    lastSignInAt: null,
     isActive: m.is_active,
-    invitedAt: m.invited_at,
     assignedOrders: assignedByCourier.get(m.id) ?? 0,
     onTheWayOrders: onTheWayByCourier.get(m.id) ?? 0,
   }))

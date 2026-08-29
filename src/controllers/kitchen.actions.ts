@@ -9,7 +9,7 @@ import { dispatchReadyNotification, dispatchOnTheWayNotification } from '@/contr
 import { type NotificationResult } from '@/services/notifications'
 import { orderStatusSchema, type OrderStatus } from '@/models/schemas/order.schema'
 import { assignCourierSchema } from '@/models/schemas/courier.schema'
-import type { ActionResult, CourierRow, Order } from '@/models/types'
+import type { ActionResult, CourierOption, Order } from '@/models/types'
 
 /**
  * Panel de cocina (KDS) e historial.
@@ -140,7 +140,7 @@ export async function assignCourierAction(p: {
  * el comentario de `listCouriersForAssignment` para por qué no usa la RPC
  * `store_couriers`.
  */
-export async function fetchStoreCouriersAction(storeId: number): Promise<ActionResult<CourierRow[]>> {
+export async function fetchStoreCouriersAction(storeId: number): Promise<ActionResult<CourierOption[]>> {
   return toActionResult(
     async () => {
       const store = positiveId.parse(storeId)
