@@ -1,8 +1,10 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { z } from 'zod'
-import { cartItemSchema, createOrderSchema } from '@/models/schemas/order.schema'
+import { cartItemSchema, createOrderSchema, type CreateOrderInput } from '@/models/schemas/order.schema'
 import { priceCartForStore, submitOrder } from '@/controllers/checkout.controller'
-import { toApiError, zodToApiError } from '@/lib/errors'
+import { RateLimitError, toApiError, zodToApiError } from '@/lib/errors'
+import { consumeRateLimit } from '@/models/rate-limit.model'
+import { RATE_LIMIT_POLICY } from '@/lib/rate-limit-policy'
 import { log } from '@/lib/log'
 
 /**
@@ -23,55 +25,97 @@ const previewQuerySchema = z.object({
 })
 
 // ---------------------------------------------------------------------------
-// Rate limit (P-07) — best-effort, EN MEMORIA DEL PROCESO.
+// Rate limit del camino de compra — Postgres vía `consumeRateLimit`
+// (`src/models/rate-limit.model.ts`, T2), no el `Map` en memoria que vivía
+// acá: placebo en Vercel, se pierde en cada cold start y no lo comparten las
+// instancias (docs/pipelines/2026-08-29-rate-limiting/00-architecture.md §2, §5.3).
 //
-// Esto NO alcanza en producción: cada lambda/edge function de Vercel tiene su
-// propia memoria, así que un atacante que rota entre instancias (o que pega
-// contra varias regiones) lo esquiva sin esfuerzo, y el conteo se pierde en
-// cada cold start. Es un piso mínimo para no dejar el endpoint completamente
-// abierto mientras no hay nada mejor. Lo que hace falta de verdad es Vercel
-// WAF (rate limiting a nivel de plataforma) o un store compartido (Upstash
-// Redis) — pendiente, reportado en el resumen de este slice.
+// La cotización (`GET`, más abajo) NO lleva límite de aplicación a propósito:
+// dispara con cada cambio de carrito y un round trip extra a Postgres por
+// tecla es exactamente lo que no se quiere. Lo cubre el WAF.
 // ---------------------------------------------------------------------------
 
-type Bucket = { count: number; resetAt: number }
-const rateLimitBuckets = new Map<string, Bucket>()
-
-function checkRateLimit(key: string, limit: number, windowMs: number): boolean {
-  const now = Date.now()
-
-  // Barrido oportunista para no dejar crecer el Map para siempre: un cron
-  // dedicado sería otra pieza de infraestructura para un limitador que ya es
-  // un parche. 1% de las requests alcanza para no acumular basura.
-  if (Math.random() < 0.01) {
-    for (const [k, bucket] of rateLimitBuckets) {
-      if (bucket.resetAt <= now) rateLimitBuckets.delete(k)
-    }
+/**
+ * `order:idempotency` es el candado de "¿ya vi esta clave?", no un límite de
+ * negocio: `limit: 1` sobre el propio `idempotencyKey` como sujeto. El
+ * incremento en Postgres es atómico (`insert ... on conflict do update`), así
+ * que de N requests concurrentes con la misma clave exactamente UNA ve
+ * `count == 1` (`allowed: true`) — esa es la única que gasta cupo real de
+ * `order:phone`/`order:store`. El resto ve `count > 1` (`allowed: false`) y
+ * sigue derecho hacia `submitOrder`, que ya sabe resolver un reintento sin
+ * crear una fila nueva (el índice único de `orders` no se toca acá). No abre
+ * un bypass de `order:phone`: reusar una `idempotencyKey` nunca crea un
+ * pedido nuevo, siempre devuelve el que ya ganó la carrera.
+ *
+ * `order:phone` es el único bucket que puede cortar la venta: 5 pedidos cada
+ * 10 minutos por el mismo teléfono, ya normalizado a E.164 por `phoneSchema`
+ * (`createOrderSchema` lo garantiza antes de que esta función se llame — por
+ * eso el límite va DESPUÉS de validar el body, nunca antes).
+ *
+ * `order:store` en cambio NUNCA bloquea: es un detector de anomalía de
+ * volumen por tienda, no un límite. Cortar la venta de un local que se hizo
+ * viral por una alerta de este balde es exactamente el error que este plan no
+ * puede cometer (00-architecture.md §5.3) — se consume, se loguea si se pasa,
+ * y la decisión de actuar queda del lado humano.
+ */
+async function enforceOrderRateLimits(input: CreateOrderInput): Promise<void> {
+  const dedupePolicy = RATE_LIMIT_POLICY['order:idempotency']
+  const dedupeDecision = await consumeRateLimit({
+    bucket: 'order:idempotency',
+    subject: input.idempotencyKey,
+    limit: dedupePolicy.limit,
+    windowSeconds: dedupePolicy.windowSeconds,
+    // Default 'allow': si la RPC falla, todas las requests ven "primera vez"
+    // y pagan los baldes reales — degradado, pero es el lado correcto en el
+    // camino de compra (un doble tap durante un hipo de Postgres no puede
+    // dejar sin cupo a nadie).
+  })
+  if (!dedupeDecision.allowed) {
+    // Reintento de la misma compra: NUNCA puede recibir 429 acá. Se saltea
+    // `order:phone`/`order:store` enteros y sigue derecho a `submitOrder`.
+    return
   }
 
-  const bucket = rateLimitBuckets.get(key)
-  if (!bucket || bucket.resetAt <= now) {
-    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs })
-    return true
+  const phonePolicy = RATE_LIMIT_POLICY['order:phone']
+  const phoneDecision = await consumeRateLimit({
+    bucket: 'order:phone',
+    subject: input.customerPhone,
+    limit: phonePolicy.limit,
+    windowSeconds: phonePolicy.windowSeconds,
+  })
+  if (!phoneDecision.allowed) {
+    // Nunca el teléfono en el log: es un dato personal y el bucket ya lo dice todo.
+    log.warn('POST /api/orders', 'order:phone excedido, pedido rechazado')
+    throw new RateLimitError('Estás mandando pedidos muy seguido. Esperá un minuto y probá de nuevo.', phoneDecision.retryAfterSeconds)
   }
-  if (bucket.count >= limit) return false
-  bucket.count += 1
-  return true
-}
 
-function clientIp(request: NextRequest): string {
-  return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-}
-
-function rateLimited() {
-  return NextResponse.json({ error: 'Demasiados pedidos en poco tiempo. Esperá un momento y volvé a intentar.' }, { status: 429 })
+  const storePolicy = RATE_LIMIT_POLICY['order:store']
+  const storeDecision = await consumeRateLimit({
+    bucket: 'order:store',
+    // Subject = slug, no el id numérico de la tienda: acá no vale la pena una
+    // consulta extra a `stores` solo para resolverlo (createOrder ya la hace
+    // de nuevo un instante después) y, una vez que `consumeRateLimit` lo pasa
+    // por HMAC-SHA256, el sujeto es texto opaco en la tabla de todos modos —
+    // el slug identifica la tienda igual de bien y es estable en la práctica
+    // (los grants no dejan que `authenticated` lo cambie).
+    subject: input.storeSlug,
+    limit: storePolicy.limit,
+    windowSeconds: storePolicy.windowSeconds,
+  })
+  if (!storeDecision.allowed) {
+    // Se loguea el umbral cruzado y no un conteo: `remaining` está clampeado a
+    // 0, así que `limit - remaining` satura y diría "300" tanto con 300 como
+    // con 3000. En un detector de anomalías de volumen, un número que miente
+    // hacia abajo es peor que no darlo.
+    log.warn('POST /api/orders', 'order:store por encima del umbral: posible pico de volumen, no se bloquea', {
+      storeSlug: input.storeSlug,
+      threshold: storePolicy.limit,
+      windowSeconds: storePolicy.windowSeconds,
+    })
+  }
 }
 
 export async function GET(request: NextRequest) {
-  const ip = clientIp(request)
-  // Cotizar es de lectura y lo dispara cada cambio de carrito: límite generoso.
-  if (!checkRateLimit(`quote:ip:${ip}`, 120, 60_000)) return rateLimited()
-
   const parsedQuery = previewQuerySchema.safeParse({
     storeSlug: request.nextUrl.searchParams.get('storeSlug'),
     items: request.nextUrl.searchParams.get('items'),
@@ -114,13 +158,6 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const ip = clientIp(request)
-  // Por IP: nadie manda 200 pedidos por minuto desde una sola conexión.
-  if (!checkRateLimit(`order:ip:${ip}`, 10, 60_000)) {
-    log.warn('POST /api/orders', 'rate limit por IP', { ip })
-    return rateLimited()
-  }
-
   let body: unknown
   try {
     body = await request.json()
@@ -134,21 +171,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(errorBody, { status })
   }
 
-  // Por teléfono: un mismo número no abre pedidos sin límite aunque rote de
-  // IP. Los 8 caracteres de idempotencyKey harían esto inútil si la clave se
-  // regenerara en cada intento, pero CLAUDE.md ya fija que se reusa por
-  // intento de compra — así que este límite sí frena a un script que la
-  // regenera a propósito para saltarse la idempotencia.
-  if (!checkRateLimit(`order:phone:${parsed.data.customerPhone}`, 5, 5 * 60_000)) {
-    log.warn('POST /api/orders', 'rate limit por teléfono', { ip })
-    return rateLimited()
-  }
-
   try {
+    // Un reintento con la misma `idempotencyKey` (el caso que la idempotencia
+    // existe para proteger: un doble tap con mala señal) no gasta cupo real —
+    // ver el candado `order:idempotency` dentro de `enforceOrderRateLimits`.
+    await enforceOrderRateLimits(parsed.data)
     const result = await submitOrder(parsed.data)
     return NextResponse.json(result, { status: 201 })
   } catch (err) {
-    const { body: errorBody, status } = toApiError(err, 'POST /api/orders')
-    return NextResponse.json(errorBody, { status })
+    const { body: errorBody, status, headers } = toApiError(err, 'POST /api/orders')
+    return NextResponse.json(errorBody, { status, headers })
   }
 }
