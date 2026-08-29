@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { cache } from 'react'
 import { after } from 'next/server'
 import { storeUrl } from '@/lib/urls'
 import { buildDeliveryQuote } from '@/lib/delivery'
@@ -262,9 +263,20 @@ export async function submitOrder(input: CreateOrderInput): Promise<SubmitOrderR
 // Seguimiento público
 // ---------------------------------------------------------------------------
 
-export async function getOrderStatus(token: string): Promise<OrderPublicView | null> {
-  return getOrderByToken(token)
-}
+/**
+ * Memoizado con `cache()` de React: `/pedido/[token]` lo llama DOS veces por
+ * carga —una en `generateMetadata` y otra en la page— y sin esto son dos
+ * queries idénticas a Postgres por cada apertura de un seguimiento.
+ *
+ * `cache()` deduplica dentro de un mismo render, que es exactamente el
+ * alcance que hace falta acá: no cachea entre requests, así que el estado del
+ * pedido sigue siendo tan fresco como antes. Importa porque el proyecto corre
+ * en el free tier de Supabase, donde lo que se agota primero es la CPU de la
+ * base, no el almacenamiento.
+ */
+export const getOrderStatus = cache(
+  async (token: string): Promise<OrderPublicView | null> => getOrderByToken(token),
+)
 
 export async function lookupOrders(tokens: string[]): Promise<OrderPublicView[]> {
   return getOrdersByTokens(tokens)
