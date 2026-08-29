@@ -573,3 +573,45 @@ export type StoreDashboard = {
 export type ActionResult<T = void> =
   | { ok: true; data: T }
   | { ok: false; error: string; fieldErrors?: Record<string, string[]> }
+
+// ---------------------------------------------------------------------------
+// Rate limiting
+//
+// El vocabulario compartido de los baldes. La unión es CERRADA a propósito: un
+// bucket es una fila en `public.rate_limits` y una entrada en
+// `RATE_LIMIT_POLICY`, así que inventar uno suelto en un `string` da un límite
+// que no existe y que nadie configuró — o sea, ningún límite.
+//
+// Los números (cuánto y en qué ventana) NO viven acá: viven en
+// `src/lib/rate-limit-policy.ts`. Acá está QUÉ se limita, allá CUÁNTO.
+// ---------------------------------------------------------------------------
+
+export type RateLimitBucket =
+  // Magic link del panel. Cuatro baldes sobre el mismo endpoint porque cada uno
+  // frena un abuso distinto: por email (alguien martillando una casilla), por
+  // IP (un script), y el global, que es un PRESUPUESTO — ver la nota en
+  // rate-limit-policy.ts.
+  | 'magic_link:email'
+  | 'magic_link:email:day'
+  | 'magic_link:ip'
+  | 'magic_link:global'
+  // Seguimiento y compra.
+  | 'lookup:ip'
+  | 'order:phone'
+  | 'order:store'
+  // Invitaciones y cambios sensibles: todos mandan mail, todos son autenticados.
+  | 'courier_invite:store'
+  | 'courier_invite:email'
+  | 'owner_invite:store'
+  | 'owner_invite:admin'
+  | 'payment_change:store'
+  | 'support:store'
+  | 'support:store:day'
+
+export type RateLimitDecision = {
+  allowed: boolean
+  /** Cuántas llamadas quedan en la ventana. Nunca negativo. */
+  remaining: number
+  /** Segundos hasta que la ventana rote. Va tal cual en el header `Retry-After`. */
+  retryAfterSeconds: number
+}

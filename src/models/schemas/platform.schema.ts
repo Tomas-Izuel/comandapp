@@ -24,12 +24,48 @@ export const storeStatusSchema = z.enum(['active', 'suspended'])
  * de una constraint de Postgres. Si se agrega uno, va en los dos lados.
  */
 export const RESERVED_SLUGS = [
+  // Rutas de la app y del stack.
   'admin', 'api', 'app', 'assets', 'auth', 'backoffice', 'blog', 'carrito', 'checkout',
   'dashboard', 'docs', 'envios', 'favicon', 'functions', 'graphql', 'health', 'help',
   'images', 'legal', 'login', 'logout', 'manifest', 'mis-pedidos', 'new', 'nueva',
   'pedido', 'pedidos', 'public', 'realtime', 'repartidor', 'repartidores', 'rest',
   'robots', 'settings', 'sitemap', 'static', 'status', 'storage', 'support', 'www',
   '_next',
+
+  // Desde acá, la lista dejó de proteger PATHS para proteger HOSTNAMES: con
+  // `[slug].comandapp.ar`, cada slug es además un subdominio real de la zona
+  // DNS de la plataforma. Si un local toma `mail` y después hace falta
+  // `mail.comandapp.ar` para Resend, el conflicto se resuelve renombrándole la
+  // tienda a un cliente.
+
+  // Correo e infraestructura de entrega. Los más urgentes: el magic link es la
+  // única puerta a /admin y Resend necesita registros en esta misma zona.
+  'mail', 'email', 'smtp', 'imap', 'pop', 'mx', 'webmail', 'autoconfig', 'autodiscover',
+  'bounces', 'track', 'link', 'links', 'send',
+
+  // DNS y red.
+  'ns', 'ns1', 'ns2', 'dns', 'ftp', 'vpn', 'gateway', 'proxy',
+
+  // Entornos.
+  'staging', 'stage', 'dev', 'test', 'qa', 'demo', 'beta', 'preview', 'sandbox', 'local',
+  'internal',
+
+  // CDN y assets.
+  'cdn', 'img', 'media', 'files', 'download', 'downloads', 'web', 'www2',
+
+  // Identidad y pagos.
+  'id', 'sso', 'oauth', 'callback', 'account', 'accounts', 'cuenta', 'pay', 'pago', 'pagos',
+  'billing', 'facturacion', 'webhook', 'webhooks',
+
+  // Observabilidad.
+  'metrics', 'monitor', 'logs', 'grafana', 'ci', 'git',
+
+  // Marca y proveedores. `comandapp.comandapp.ar` de un tercero es phishing
+  // servido por nosotros, con nuestro certificado.
+  'comandapp', 'vercel', 'supabase', 'resend', 'mercadopago', 'mp',
+
+  // Superficie de cliente.
+  'm', 'mobile', 'soporte', 'ayuda', 'contacto',
 ] as const
 
 const slugSchema = z

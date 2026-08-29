@@ -30,6 +30,30 @@ export function isDomainError(err: unknown): err is DomainError {
   return err instanceof DomainError
 }
 
+/**
+ * Un límite de uso alcanzado. Es una `DomainError` y no un fallo interno a
+ * propósito: el mensaje es interfaz —la persona tiene que entender que esperó
+ * poco, no que algo se rompió— y por eso viaja al cliente como los demás.
+ *
+ * `retryAfterSeconds` sale del balde en Postgres y va tal cual al header
+ * `Retry-After`. Un 429 sin ese dato obliga al cliente a adivinar cuándo
+ * reintentar, y lo que hace un cliente que adivina es reintentar en loop, que
+ * es justo lo que el límite venía a frenar.
+ */
+export class RateLimitError extends DomainError {
+  readonly retryAfterSeconds: number
+
+  constructor(message: string, retryAfterSeconds: number, options?: { field?: string }) {
+    super(message, { status: 429, field: options?.field })
+    this.name = 'RateLimitError'
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
+export function isRateLimitError(err: unknown): err is RateLimitError {
+  return err instanceof RateLimitError
+}
+
 export type ApiErrorBody = {
   error: string
   field?: string
