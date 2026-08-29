@@ -68,23 +68,31 @@ export function SalesChart({ data, currency }: { data: SalesPoint[]; currency: s
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <table className="sr-only">
-          <caption>Facturación por día</caption>
-          <thead>
-            <tr>
-              <th scope="col">Día</th>
-              <th scope="col">Facturación</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((point) => (
-              <tr key={point.date}>
-                <td>{formatDay(point.date)}</td>
-                <td>{formatCentsCompact(point.revenueCents, currency)}</td>
+        {/* El `sr-only` va en el `div` que envuelve, no en la `table`: en una
+            tabla el alto computado por el navegador es un MÍNIMO, no un
+            máximo, así que `height:1px` de la utilidad no la colapsa —
+            quedaba en 768px reales, oculta por `clip` pero igual estirando
+            el documento por debajo (y, al ser absoluta y huérfana de
+            contenedor posicionado, el `<main>` de `AdminShell`). */}
+        <div className="sr-only">
+          <table>
+            <caption>Facturación por día</caption>
+            <thead>
+              <tr>
+                <th scope="col">Día</th>
+                <th scope="col">Facturación</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.map((point) => (
+                <tr key={point.date}>
+                  <td>{formatDay(point.date)}</td>
+                  <td>{formatCentsCompact(point.revenueCents, currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div>
@@ -100,23 +108,26 @@ export function SalesChart({ data, currency }: { data: SalesPoint[]; currency: s
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <table className="sr-only">
-          <caption>Pedidos por día</caption>
-          <thead>
-            <tr>
-              <th scope="col">Día</th>
-              <th scope="col">Pedidos</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((point) => (
-              <tr key={point.date}>
-                <td>{formatDay(point.date)}</td>
-                <td>{point.orders}</td>
+        {/* Mismo motivo que arriba: el colapso a 1×1 va en el `div`, no en la `table`. */}
+        <div className="sr-only">
+          <table>
+            <caption>Pedidos por día</caption>
+            <thead>
+              <tr>
+                <th scope="col">Día</th>
+                <th scope="col">Pedidos</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.map((point) => (
+                <tr key={point.date}>
+                  <td>{formatDay(point.date)}</td>
+                  <td>{point.orders}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )

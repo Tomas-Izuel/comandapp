@@ -109,6 +109,20 @@ export function AdminShell({
         column NO puede achicarse abajo de su contenido sin eso, así que sin
         `min-h-0` el `overflow-y-auto` nunca llega a activarse y el chasis se
         estira igual que antes.
+      - `relative` en `<main>` NO es cosmético: es lo que faltaba para que el
+        "doble scroll" no volviera a aparecer, página por página, con cada
+        componente que trae un absoluto propio. Sin un ancestro posicionado,
+        cualquier descendiente `position: absolute` (los inputs ocultos de
+        Radix en Checkbox/Select/RadioGroup, o cualquier `<table>` u otro nodo
+        marcado `sr-only` que en realidad no colapsa a 1×1) resuelve su bloque
+        contenedor contra el initial containing block — el documento, no
+        `<main>` — así que (a) el `overflow-y-auto` de acá NO lo recorta, y
+        (b) ese cajón estira `<html>`, que vuelve a scrollear por su cuenta
+        ENCIMA del scroll de `<main>`. Medido en Ajustes y Apariencia: los
+        inputs/selects ocultos de Radix quedaban con `offsetParent === BODY` y
+        su `bottom` coincidía exacto con el `scrollHeight` del documento. Con
+        `relative` acá, ese mismo absoluto pasa a resolver contra `<main>`: se
+        recorta con el resto y el documento deja de moverse.
     */
     <div className="flex h-dvh w-full flex-col overflow-hidden lg:flex-row">
       <header className="border-border bg-card shrink-0 border-b lg:hidden">
@@ -235,7 +249,7 @@ export function AdminShell({
         seguir teniendo SU propio `overflow-x-auto`; el área de trabajo nunca
         scrollea de costado.
       */}
-      <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">{children}</main>
+      <main className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">{children}</main>
     </div>
   )
 }
@@ -261,7 +275,7 @@ export function AdminBareChrome({ children }: { children: React.ReactNode }) {
           Salir
         </button>
       </header>
-      <main className="flex min-h-0 flex-1 items-center justify-center overflow-x-hidden overflow-y-auto px-(--admin-gutter) py-10 lg:px-(--admin-gutter-lg)">
+      <main className="relative flex min-h-0 flex-1 items-center justify-center overflow-x-hidden overflow-y-auto px-(--admin-gutter) py-10 lg:px-(--admin-gutter-lg)">
         {children}
       </main>
     </div>
