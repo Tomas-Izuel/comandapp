@@ -1,9 +1,12 @@
 import type { Metadata } from 'next'
+import { headers } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { getStoreBySlug } from '@/models/store.model'
 import { buildThemeCss, themeClass } from '@/lib/theme'
+import { storeBasePath } from '@/lib/urls'
 import { CartProvider } from '@/lib/cart'
 import { StoreChrome } from '@/views/storefront/store-chrome'
+import { StoreBasePathProvider } from '@/views/storefront/store-base-path'
 import { PreviewBridge } from '@/views/storefront/preview-bridge'
 
 /**
@@ -32,6 +35,14 @@ export async function generateMetadata(props: LayoutProps<'/[store]'>): Promise<
  * `buildThemeCss` arma el <style> scopeado en `[data-store-theme]` y
  * `themeClass` decide si ese scope corre en variant `dark`. Sin JS, sin
  * flash — y a partir de acá todo shadcn se adapta solo.
+ *
+ * `headers()` no cambia la estrategia de render: este árbol ya es dinámico de
+ * punta a punta (el cliente de Supabase con cookies, más abajo en
+ * `getStoreBySlug`, ya lo exige). Se resuelve el `basePath` UNA VEZ acá —el
+ * header `Host` no existe en el bundle del browser— y se provee al árbol
+ * entero con `StoreBasePathProvider` (T6, `00-architecture.md` §2.1): sin
+ * esto, todo `<Link>` interno de la vitrina quedaría hardcodeado a
+ * `` `/${slug}` `` y duplicaría el path en un subdominio.
  */
 export default async function StoreLayout(props: LayoutProps<'/[store]'>) {
   const { store: slug } = await props.params
@@ -40,14 +51,18 @@ export default async function StoreLayout(props: LayoutProps<'/[store]'>) {
 
   const themeCss = buildThemeCss(store.branding)
   const themeCls = themeClass(store.branding)
+  const host = (await headers()).get('host')
+  const basePath = storeBasePath(store.slug, host)
 
   return (
     <div data-store-theme className={`${themeCls} bg-background text-foreground flex min-h-full flex-1 flex-col`}>
       {/* CSS ya validado por brandingSchema en el modelo */}
       <style dangerouslySetInnerHTML={{ __html: themeCss }} />
-      <CartProvider storeSlug={store.slug}>
-        <StoreChrome store={store}>{props.children}</StoreChrome>
-      </CartProvider>
+      <StoreBasePathProvider basePath={basePath}>
+        <CartProvider storeSlug={store.slug}>
+          <StoreChrome store={store}>{props.children}</StoreChrome>
+        </CartProvider>
+      </StoreBasePathProvider>
       {/* Después del <style> del tema real y de todo el árbol: a igual
           especificidad ([data-store-theme] en los dos), gana el que aparece
           último en el documento. Así `/admin/apariencia` puede previsualizar

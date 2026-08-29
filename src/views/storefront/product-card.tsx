@@ -7,6 +7,7 @@ import { Panel, PhotoFrame, StatusPill, iconButtonClass } from '@/views/shared/s
 import { Price } from '@/views/shared/money'
 import { useCart } from '@/lib/cart'
 import { useAddFeedback } from '@/views/storefront/use-add-feedback'
+import { storeHref, useStoreBasePath } from '@/views/storefront/store-base-path'
 import { cn } from '@/lib/utils'
 import type { MenuProduct } from '@/models/types'
 
@@ -79,15 +80,20 @@ import type { MenuProduct } from '@/models/types'
  */
 export function ProductCard({
   product,
-  storeSlug,
   currency,
 }: {
   product: MenuProduct
+  // `storeSlug` sigue en el tipo aunque no se destructura acá: `catalog-list.tsx`
+  // (fuera de este slice) lo sigue pasando y sacarlo del tipo rompería ese
+  // call site con un error de propiedad excedente. El link ya no lo necesita
+  // — sale de `useStoreBasePath()`, no del slug a mano (T6).
   storeSlug: string
   currency: string
 }) {
   const { addLine } = useCart()
   const { flash, isAdded } = useAddFeedback()
+  const basePath = useStoreBasePath()
+  const productHref = storeHref(basePath, `/producto/${product.id}`)
   const isSoldOut = !product.isAvailable
   // El número (minSelect) lo manda siempre el servidor; acá solo se decide
   // el camino: sin opciones obligatorias, sumar directo tiene sentido — con
@@ -117,7 +123,7 @@ export function ProductCard({
     if (needsOptions) {
       return (
         <Link
-          href={`/${storeSlug}/producto/${product.id}`}
+          href={productHref}
           aria-label={`Ver opciones de ${product.name}`}
           className={cn(iconButtonClass('primary'), positionClass)}
         >
@@ -242,7 +248,7 @@ export function ProductCard({
         </div>
 
         <Link
-          href={`/${storeSlug}/producto/${product.id}`}
+          href={productHref}
           className={cn(
             'after:absolute after:inset-0 flex min-w-0 flex-1 flex-col gap-1 p-3',
             // El padding de acá es el de la forma vertical (separa el texto

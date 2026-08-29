@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import { ClipboardList } from 'lucide-react'
 import { StoreDock } from '@/views/storefront/store-dock'
 import { SiteFooter } from '@/views/shared/site-footer'
+import { storeHref, useStoreBasePath } from '@/views/storefront/store-base-path'
 import type { StoreWithBranding } from '@/models/types'
 
 /**
@@ -21,15 +22,21 @@ import type { StoreWithBranding } from '@/models/types'
  */
 export function StoreChrome({ store, children }: { store: StoreWithBranding; children: React.ReactNode }) {
   const pathname = usePathname()
+  const basePath = useStoreBasePath()
+  const homeHref = storeHref(basePath, '/')
   // El dock solo se dibuja en el catálogo: `/producto/[id]`, `/carrito` y
   // `/checkout` ya tienen su propia `ActionBar` fija al pie, y dos barras
   // apiladas es exactamente lo que el contrato de dirección no quiere.
-  const isCatalogRoute = pathname === `/${store.slug}`
+  // `usePathname()` refleja la URL visible del browser, no el destino interno
+  // del rewrite (T6): en un subdominio de tienda esa URL es `/`, no
+  // `` /${slug} ``, así que compara contra `homeHref` — que ya resuelve a la
+  // misma raíz en los dos modos — y no contra el slug a mano.
+  const isCatalogRoute = pathname === homeHref
 
   return (
     <>
       <header className="border-border bg-background sticky top-0 z-40 flex h-(--chrome-h) items-center justify-between border-b px-4 sm:px-6">
-        <Link href={`/${store.slug}`} className="flex min-w-0 items-center" aria-label={store.name}>
+        <Link href={homeHref} className="flex min-w-0 items-center" aria-label={store.name}>
           {store.branding.logo_url ? (
             // Alto fijo, ancho contenido: el logo puede llegar con cualquier
             // proporción y `fill` + `object-contain` lo respeta sin recortar.

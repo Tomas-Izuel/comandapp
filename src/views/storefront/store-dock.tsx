@@ -10,6 +10,7 @@ import { Price } from '@/views/shared/money'
 import { useCart } from '@/lib/cart'
 import { useCheckoutQuote } from './use-priced-cart'
 import { useAddFeedback } from './use-add-feedback'
+import { storeHref, useStoreBasePath } from './store-base-path'
 import { cn } from '@/lib/utils'
 import type { StoreWithBranding } from '@/models/types'
 import { GoogleMaps } from '@/components/ui/maps'
@@ -250,6 +251,8 @@ function CartSlot({
   // ramas (nunca se desmonta al pasar de círculo a pastilla), así que
   // saltear la regla de hooks acá rompería en cuanto el conteo tocara 0.
   const feedback = useAddFeedback()
+  const basePath = useStoreBasePath()
+  const cartHref = storeHref(basePath, '/carrito')
   const prevCountRef = React.useRef(itemCount)
   // El primer render en el cliente arranca en 0 (nada de `localStorage` en
   // el servidor) y recién después `useCart` hidrata el carrito guardado: ese
@@ -270,7 +273,7 @@ function CartSlot({
 
   if (!hasItems) {
     return (
-      <Link href={`/${store.slug}/carrito`} aria-label="Carrito" className={iconButtonClass('primary')}>
+      <Link href={cartHref} aria-label="Carrito" className={iconButtonClass('primary')}>
         <ShoppingBag className="size-5" aria-hidden />
       </Link>
     )
@@ -281,7 +284,7 @@ function CartSlot({
 
   return (
     <Link
-      href={`/${store.slug}/carrito`}
+      href={cartHref}
       aria-label={`Ver carrito, ${itemsLabel}`}
       className={cn(
         // Alto ligado a `--dock-h` (globals.css) en vez de `h-11`: `h-11` sale

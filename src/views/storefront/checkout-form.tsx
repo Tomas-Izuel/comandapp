@@ -16,6 +16,7 @@ import { ActionBar, Panel } from '@/views/shared/surfaces'
 import { useCart, saveOrderRef } from '@/lib/cart'
 import { getSavedCustomer, saveCustomer, clearSavedCustomer } from '@/lib/customer'
 import { useCheckoutQuote } from '@/views/storefront/use-priced-cart'
+import { storeHref, useStoreBasePath } from '@/views/storefront/store-base-path'
 import { formatCentsCompact } from '@/lib/money'
 import { usePreviewMode } from '@/lib/preview-mode'
 import { cn } from '@/lib/utils'
@@ -53,6 +54,7 @@ export function CheckoutForm({
   // carrito) sigue andando: el pedido del dueño real, no el de la vista
   // previa, es lo único que no puede pasar.
   const isPreview = usePreviewMode()
+  const basePath = useStoreBasePath()
 
   const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>('online')
   const [customerName, setCustomerName] = React.useState('')
@@ -137,7 +139,7 @@ export function CheckoutForm({
         description="Agregá algo de la carta antes de pasar al checkout."
         action={
           <Button asChild size="lg" className="h-11 rounded-pill">
-            <Link href={`/${storeSlug}`}>Ver la carta</Link>
+            <Link href={storeHref(basePath, '/')}>Ver la carta</Link>
           </Button>
         }
       />

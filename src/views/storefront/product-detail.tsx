@@ -22,6 +22,7 @@ import {
 import { Price } from '@/views/shared/money'
 import { ClosedNotice } from '@/views/shared/states'
 import { useAddFeedback } from '@/views/storefront/use-add-feedback'
+import { storeHref, useStoreBasePath } from '@/views/storefront/store-base-path'
 import { useCart } from '@/lib/cart'
 import { formatCentsCompact } from '@/lib/money'
 import { cn } from '@/lib/utils'
@@ -52,6 +53,8 @@ export function ProductDetailView({
 }) {
   const { addLine } = useCart()
   const { flash, isAdded } = useAddFeedback()
+  const basePath = useStoreBasePath()
+  const homeHref = storeHref(basePath, '/')
   const [quantity, setQuantity] = React.useState(1)
   const [selected, setSelected] = React.useState<Record<number, number[]>>({})
   const [notes, setNotes] = React.useState('')
@@ -145,7 +148,7 @@ export function ProductDetailView({
           ) : undefined}
         </PhotoFrame>
         <Link
-          href={`/${store.slug}`}
+          href={homeHref}
           aria-label={`Volver a ${store.name}`}
           className={iconButtonClass('surface', 'absolute top-7 left-7 sm:top-9 sm:left-9 bg-card/90 shadow-raise backdrop-blur hover:bg-card')}
         >

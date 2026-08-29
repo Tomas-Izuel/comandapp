@@ -20,6 +20,7 @@ import { EmptyState, ClosedNotice } from '@/views/shared/states'
 import { Price } from '@/views/shared/money'
 import { useCart } from '@/lib/cart'
 import { usePricedLines, type PricedItemQuote } from '@/views/storefront/use-priced-cart'
+import { storeHref, useStoreBasePath } from '@/views/storefront/store-base-path'
 import { cn } from '@/lib/utils'
 
 /**
@@ -42,6 +43,7 @@ export function CartView({
   const router = useRouter()
   const { lines, hydrated, removeLine, setQuantity } = useCart()
   const { results, subtotalCents, isLoading, hasErrors, cartError } = usePricedLines(storeSlug, lines)
+  const basePath = useStoreBasePath()
 
   // Bajar de 1 a 0 con el stepper borraría la línea sin avisar (F-04): en vez
   // de eso se pide confirmación. Guarda el ÍNDICE de la línea en duda, no un
@@ -58,7 +60,7 @@ export function CartView({
         description={`Todavía no agregaste nada de ${storeName}.`}
         action={
           <Button asChild size="lg" className="h-11 rounded-pill">
-            <Link href={`/${storeSlug}`}>Ver la carta</Link>
+            <Link href={storeHref(basePath, '/')}>Ver la carta</Link>
           </Button>
         }
       />
@@ -230,7 +232,7 @@ export function CartView({
           size="lg"
           className="h-12 w-full rounded-pill text-base"
           disabled={!canProceed}
-          onClick={() => router.push(`/${storeSlug}/checkout`)}
+          onClick={() => router.push(storeHref(basePath, '/checkout'))}
         >
           {acceptingOrders ? 'Ir a pagar' : 'El local no está tomando pedidos'}
         </Button>
