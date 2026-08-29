@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { expect } from 'vitest'
 
@@ -154,6 +154,56 @@ export function asAnon(statements: string[]): string[] {
 /** UUID nuevo para cada usuario de fixture. */
 export function newUserId(): string {
   return randomUUID()
+}
+
+/**
+ * Corre UN script en su PROPIA conexión (`docker exec psql`), en paralelo con
+ * las demás llamadas de un mismo `Promise.all`. Es lo que hace falta para
+ * probar de VERDAD la atomicidad de `consume_rate_limit`: `sql()`/`runPsql()`
+ * son síncronos (`execFileSync`), así que un `for` de N llamadas a `sql()`
+ * las manda una atrás de la otra —nunca se pisan, y un contador roto pasaría
+ * el test igual—. `spawn` + una Promise por proceso es lo único que arranca
+ * las N conexiones casi al mismo tiempo, para que Postgres tenga que
+ * serializar el `insert ... on conflict` bajo carga real, no bajo un
+ * `for` que ya se lo sirve en orden.
+ */
+function runPsqlAsync(script: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'docker',
+      ['exec', '-i', CONTAINER, 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-t', '-A', '-q'],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    )
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error((stderr || stdout || `psql salió con código ${code}`).trim()))
+        return
+      }
+      resolve(stdout.trim())
+    })
+    child.stdin.write(script)
+    child.stdin.end()
+  })
+}
+
+/**
+ * Lanza `scripts.length` conexiones de Postgres EN PARALELO (una por
+ * elemento) y devuelve sus salidas en el mismo orden que se pidieron —no en
+ * el orden en que terminaron—. Cada script corre su propio `begin/rollback`
+ * si necesita aislarse de los demás; no comparten transacción entre sí
+ * (justamente lo contrario de `inTransaction`).
+ */
+export function sqlConcurrently(scripts: string[]): Promise<string[]> {
+  return Promise.all(scripts.map(runPsqlAsync))
 }
 
 /**

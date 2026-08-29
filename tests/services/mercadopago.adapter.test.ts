@@ -18,8 +18,8 @@ const { credentialsRows, paymentGetMock } = vi.hoisted(() => ({
 
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({
-    from: (_table: string) => ({
-      select: (_cols: string) => ({
+    from: () => ({
+      select: () => ({
         eq: (_col: string, storeId: number) => ({
           maybeSingle: async () => ({ data: credentialsRows.get(storeId) ?? null, error: null }),
         }),
@@ -36,7 +36,7 @@ vi.mock('mercadopago', () => {
   }
   class MockMPNotFoundError extends Error {}
   class MockMercadoPagoConfig {
-    constructor(_opts: { accessToken: string }) {}
+    constructor() {}
   }
   class MockPreference {}
   class MockPaymentRefund {}

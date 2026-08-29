@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { DomainError, isDomainError, toApiError, zodToApiError } from '@/lib/errors'
+import { DomainError, RateLimitError, isDomainError, isRateLimitError, toApiError, zodToApiError } from '@/lib/errors'
 
 // `zodToApiError` y `toApiError` loguean con `log.error`, que en desarrollo
 // escribe por `console.error`/`console.log`. Lo silenciamos para no ensuciar
@@ -29,6 +29,59 @@ describe('DomainError / isDomainError', () => {
     expect(isDomainError(new DomainError('x'))).toBe(true)
     expect(isDomainError(new Error('x'))).toBe(false)
     expect(isDomainError('no ni siquiera es un Error')).toBe(false)
+  })
+})
+
+describe('RateLimitError — un límite alcanzado, no una falla interna', () => {
+  it('es un DomainError con status 429 y guarda retryAfterSeconds', () => {
+    const err = new RateLimitError('Esperá un minuto y probá de nuevo.', 42)
+    expect(isDomainError(err)).toBe(true)
+    expect(err.status).toBe(429)
+    expect(err.retryAfterSeconds).toBe(42)
+  })
+
+  it('isRateLimitError distingue un RateLimitError de un DomainError común', () => {
+    expect(isRateLimitError(new RateLimitError('x', 10))).toBe(true)
+    expect(isRateLimitError(new DomainError('x'))).toBe(false)
+    expect(isRateLimitError(new Error('x'))).toBe(false)
+  })
+})
+
+describe('toApiError — un RateLimitError agrega el header Retry-After (S-T2)', () => {
+  it('devuelve status 429, el mensaje del dominio tal cual, y Retry-After con segundos enteros', () => {
+    const err = new RateLimitError('Estás mandando pedidos muy seguido. Esperá un minuto y probá de nuevo.', 37)
+    const { body, status, headers } = toApiError(err, 'orders.rate-limit')
+
+    expect(status).toBe(429)
+    expect(body.error).toBe('Estás mandando pedidos muy seguido. Esperá un minuto y probá de nuevo.')
+    expect(headers).toEqual({ 'Retry-After': '37' })
+  })
+
+  it('redondea hacia arriba y nunca da menos de 1, aunque retryAfterSeconds sea 0 o fraccionario', () => {
+    expect(toApiError(new RateLimitError('x', 0), 'ctx').headers).toEqual({ 'Retry-After': '1' })
+    expect(toApiError(new RateLimitError('x', 0.2), 'ctx').headers).toEqual({ 'Retry-After': '1' })
+    expect(toApiError(new RateLimitError('x', 4.1), 'ctx').headers).toEqual({ 'Retry-After': '5' })
+  })
+
+  it('un RateLimitError con field lo sigue llevando en el body, igual que un DomainError común', () => {
+    const err = new RateLimitError('Límite alcanzado', 10, { field: 'customerPhone' })
+    const { body } = toApiError(err, 'ctx')
+    expect(body.field).toBe('customerPhone')
+  })
+
+  it('NO-REGRESIÓN: un DomainError común sigue sin header, exactamente como antes de agregar RateLimitError', () => {
+    const err = new DomainError('Esta tienda no está disponible', { status: 400 })
+    const result = toApiError(err, 'checkout')
+    expect(result.status).toBe(400)
+    expect(result.body.error).toBe('Esta tienda no está disponible')
+    expect(result.headers).toBeUndefined()
+  })
+
+  it('NO-REGRESIÓN: un Error genérico sigue dando 500 genérico sin header, exactamente como antes', () => {
+    const result = toApiError(new Error('boom interno'), 'ctx')
+    expect(result.status).toBe(500)
+    expect(result.body.error).toBe('No pudimos procesar el pedido. Probá de nuevo en un momento.')
+    expect(result.headers).toBeUndefined()
   })
 })
 

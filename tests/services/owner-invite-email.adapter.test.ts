@@ -21,7 +21,7 @@ const { sendMock } = vi.hoisted(() => ({ sendMock: vi.fn() }))
 vi.mock('resend', () => ({
   Resend: class MockResend {
     emails = { send: sendMock }
-    constructor(_apiKey: string) {}
+    constructor() {}
   },
 }))
 
@@ -140,7 +140,45 @@ describe('sendOwnerInviteEmail — resiliencia sin RESEND_API_KEY / RESEND_FROM_
     expect(result.status).toBe('failed')
   })
 
-  it('el idempotencyKey mandado a Resend es determinístico por storeId (store-owner-invite/<id>) — un doble click no manda dos mails', async () => {
+  /**
+   * HALLAZGO PREEXISTENTE, YA RESUELTO EN `src/` (no tocado acá): este test
+   * esperaba `idempotencyKey: 'store-owner-invite/99'` (una clave atada SOLO
+   * al `storeId`), pero el código real —con un comentario largo que explica
+   * el porqué— la ató también al CONTENIDO del `inviteUrl`
+   * (`store-owner-invite/<id>/<hash del inviteUrl>`). El motivo, verificado
+   * contra la API real de Resend: `generateLink()` devuelve un `token_hash`
+   * nuevo en cada invocación, así que una clave atada solo al `storeId` hace
+   * que la SEGUNDA invitación real (invite inicial + reenvío, ambas con el
+   * mismo storeId pero un link distinto) le llegue a Resend con el MISMO
+   * `idempotencyKey` que la primera pero un cuerpo distinto — Resend responde
+   * `409 invalid_idempotent_request` en vez de mandar el mail. O sea que la
+   * versión vieja de esta clave rompía el reenvío legítimo, que es
+   * exactamente el camino que "Reenviar invitación" existe para cubrir.
+   *
+   * El código quedó bien, el test quedó viejo: se reescribe para afirmar la
+   * PROPIEDAD que le importa al negocio (mismo link → mismo request → dedupe;
+   * link nuevo → clave nueva → sale sin colisionar), no el string literal que
+   * produce una implementación de un detalle interno (el algoritmo de hash).
+   */
+  it('el idempotencyKey es estable para el MISMO inviteUrl (un doble click no manda dos mails)', async () => {
+    sendMock.mockResolvedValue({ data: { id: 'resend-id-999' }, error: null })
+    const { sendOwnerInviteEmail } = await loadAdapter({
+      RESEND_API_KEY: 'una-key-cualquiera',
+      RESEND_FROM_EMAIL: 'hola@burgershop.test',
+    })
+    const inviteUrl = 'https://burgershop.test/admin/acceso/confirm?token_hash=x&type=email'
+
+    await sendOwnerInviteEmail({ storeId: 99, to: 'dueno@la-birra.test', storeName: 'La Birra', inviteUrl })
+    await sendOwnerInviteEmail({ storeId: 99, to: 'dueno@la-birra.test', storeName: 'La Birra', inviteUrl })
+
+    const [firstKey, secondKey] = sendMock.mock.calls.map(
+      (call) => (call[1] as { idempotencyKey: string }).idempotencyKey,
+    )
+    expect(firstKey).toBe(secondKey)
+    expect(firstKey).toContain('99') // namespaced por tienda, para no dedupear entre locales distintos
+  })
+
+  it('un `inviteUrl` DISTINTO (reenvío real, token_hash nuevo) produce una clave DISTINTA — si no, Resend rebotaría el reenvío con 409', async () => {
     sendMock.mockResolvedValue({ data: { id: 'resend-id-999' }, error: null })
     const { sendOwnerInviteEmail } = await loadAdapter({
       RESEND_API_KEY: 'una-key-cualquiera',
@@ -151,10 +189,35 @@ describe('sendOwnerInviteEmail — resiliencia sin RESEND_API_KEY / RESEND_FROM_
       storeId: 99,
       to: 'dueno@la-birra.test',
       storeName: 'La Birra',
-      inviteUrl: 'https://burgershop.test/admin/acceso/confirm?token_hash=x&type=email',
+      inviteUrl: 'https://burgershop.test/admin/acceso/confirm?token_hash=primer-token&type=email',
+    })
+    await sendOwnerInviteEmail({
+      storeId: 99,
+      to: 'dueno@la-birra.test',
+      storeName: 'La Birra',
+      inviteUrl: 'https://burgershop.test/admin/acceso/confirm?token_hash=segundo-token-de-un-reenvio&type=email',
     })
 
-    const options = sendMock.mock.calls[0]?.[1]
-    expect(options).toEqual({ idempotencyKey: 'store-owner-invite/99' })
+    const [firstKey, secondKey] = sendMock.mock.calls.map(
+      (call) => (call[1] as { idempotencyKey: string }).idempotencyKey,
+    )
+    expect(firstKey).not.toBe(secondKey)
+  })
+
+  it('dos tiendas distintas con el MISMO inviteUrl (caso de borde improbable) igual quedan namespaced por storeId', async () => {
+    sendMock.mockResolvedValue({ data: { id: 'resend-id-999' }, error: null })
+    const { sendOwnerInviteEmail } = await loadAdapter({
+      RESEND_API_KEY: 'una-key-cualquiera',
+      RESEND_FROM_EMAIL: 'hola@burgershop.test',
+    })
+    const inviteUrl = 'https://burgershop.test/admin/acceso/confirm?token_hash=x&type=email'
+
+    await sendOwnerInviteEmail({ storeId: 1, to: 'a@x.test', storeName: 'Tienda A', inviteUrl })
+    await sendOwnerInviteEmail({ storeId: 2, to: 'b@x.test', storeName: 'Tienda B', inviteUrl })
+
+    const [firstKey, secondKey] = sendMock.mock.calls.map(
+      (call) => (call[1] as { idempotencyKey: string }).idempotencyKey,
+    )
+    expect(firstKey).not.toBe(secondKey)
   })
 })

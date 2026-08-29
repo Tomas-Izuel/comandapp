@@ -28,6 +28,18 @@ function validCartItem() {
   return { productId: 1, quantity: 2, optionIds: [10, 11], notes: 'sin sal' }
 }
 
+/**
+ * Saca UNA clave de un objeto sin dejar un binding sin usar (el
+ * `const { x: _omit, ...rest } = obj` de siempre dispara
+ * `no-unused-vars` porque este repo no configura `argsIgnorePattern` para
+ * `_`; esta función evita el binding en vez de silenciar el lint).
+ */
+function omit<T extends object, K extends keyof T>(obj: T, key: K): Omit<T, K> {
+  const clone = { ...obj }
+  delete clone[key]
+  return clone
+}
+
 function validOrderInput() {
   return {
     storeSlug: 'la-birra',
@@ -110,8 +122,7 @@ describe('createOrderSchema — el total lo pone siempre el servidor', () => {
   })
 
   it('idempotencyKey es obligatoria: sin ella, un doble tap con mala señal podría duplicar el pedido', () => {
-    const { idempotencyKey: _omit, ...rest } = validOrderInput()
-    const result = createOrderSchema.safeParse(rest)
+    const result = createOrderSchema.safeParse(omit(validOrderInput(), 'idempotencyKey'))
     expect(result.success).toBe(false)
   })
 
@@ -133,8 +144,7 @@ describe('createOrderSchema — el total lo pone siempre el servidor', () => {
     })
 
     it('omitir el campo directamente también es válido', () => {
-      const { customerEmail: _omit, ...rest } = validOrderInput()
-      expect(createOrderSchema.safeParse(rest).success).toBe(true)
+      expect(createOrderSchema.safeParse(omit(validOrderInput(), 'customerEmail')).success).toBe(true)
     })
   })
 })

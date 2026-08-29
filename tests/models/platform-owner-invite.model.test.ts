@@ -40,6 +40,15 @@ vi.mock('@/services/notifications/email/owner-invite', () => ({
 
 vi.mock('@/lib/supabase/server', () => ({
   createClient: async () => ({
+    // `requirePlatformAdmin` (adentro de `resendOwnerInvite`) llama
+    // `auth.getClaims()` para el corte de sesión de 12hs ANTES de leer
+    // `platform_admins` — ver `src/models/platform.model.ts`. La forma real es
+    // `{ data: { claims }, error }` (nunca un objeto pelado): sin `amr` en los
+    // claims, `authTimeFromClaims` da `null` y el corte por edad no se activa
+    // (el fallback documentado: "sin amr no se corta, deciden las RLS"), que
+    // es exactamente el comportamiento que este archivo necesita para poder
+    // probar el armado de la URL sin meterse con la lógica de expiración.
+    auth: { getClaims: async () => ({ data: { claims: null }, error: null }) },
     from: (table: string) => {
       if (table !== 'platform_admins') throw new Error(`tabla RLS inesperada en el test: ${table}`)
       return {

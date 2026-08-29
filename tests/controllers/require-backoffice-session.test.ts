@@ -24,8 +24,22 @@ const { requirePlatformAdminMock, getCurrentUserMock } = vi.hoisted(() => ({
   getCurrentUserMock: vi.fn(),
 }))
 
+/**
+ * El mock del módulo tiene que traer TAMBIÉN `BackofficeSessionExpiredError`:
+ * `requireBackofficeSession` la importa para un `instanceof` (no solo
+ * `requirePlatformAdmin`), y un mock que reemplaza el módulo entero sin ese
+ * export deja `BackofficeSessionExpiredError` como `undefined` — `instanceof
+ * undefined` tira `TypeError`, no `false`. No hace falta la clase real (que
+ * arrastraría todo el árbol de imports de `platform.model.ts`, con sus propias
+ * variables de entorno): al mockear el módulo entero, el `instanceof` de
+ * `platform.controller.ts` compara contra ESTE export, así que un doble local
+ * alcanza siempre que el test construya sus rechazos con la MISMA clase.
+ */
+class BackofficeSessionExpiredError extends Error {}
+
 vi.mock('@/models/platform.model', () => ({
   requirePlatformAdmin: requirePlatformAdminMock,
+  BackofficeSessionExpiredError,
 }))
 
 vi.mock('@/lib/supabase/server', () => ({
@@ -86,6 +100,22 @@ describe('requireBackofficeSession()', () => {
     const path = await redirectPathOf(() => requireBackofficeSession())
 
     expect(path).toBe('/backoffice/mfa')
+  })
+
+  it('sesión vencida (12hs, BackofficeSessionExpiredError) redirige a /backoffice/login?error=sesion_vencida, NO a /backoffice/mfa', async () => {
+    // Distinto del caso "sin aal2" de arriba: acá SÍ hay que distinguir el
+    // motivo, porque el destino es otro. Un admin con sesión vencida ya pasó
+    // el TOTP alguna vez (sigue siendo aal2 para Supabase), así que mandarlo a
+    // /backoffice/mfa lo dejaría rebotando ahí para siempre — lo que renueva
+    // la sesión es un login nuevo, no repetir el segundo factor.
+    requirePlatformAdminMock.mockRejectedValue(new BackofficeSessionExpiredError('vencida'))
+
+    const path = await redirectPathOf(() => requireBackofficeSession())
+
+    expect(path).toBe('/backoffice/login?error=sesion_vencida')
+    // `getCurrentUser` no hace falta para diagnosticar ESTE caso: ya se sabe
+    // el destino sin volver a preguntar por la sesión.
+    expect(getCurrentUserMock).not.toHaveBeenCalled()
   })
 
   it('con aal2 y fila en platform_admins devuelve el email y NO redirige', async () => {
