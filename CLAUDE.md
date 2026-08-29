@@ -284,24 +284,51 @@ cuerpo** (`is_store_member` / `is_platform_admin`).
 
 ### Crons
 
-Declarados en `vercel.json`. **Vercel Cron invoca con `GET`**, así que esos
-handlers exportan `GET` y comparan `CRON_SECRET` en tiempo constante.
+**Los invoca pg_cron desde Postgres, no Vercel Cron**, y el motivo es un
+bloqueante de plan, no una preferencia. De la doc de Vercel, textual: *"Hobby
+accounts are limited to daily cron jobs. This cron expression would run more
+than once per day"* — y el efecto no es que corran lento: **el deploy falla**.
 
-| Ruta | Cada | Para qué |
-|---|---|---|
-| `/api/cron/outbox` | 2 min | Entregar `order_events` al POS del local |
-| `/api/cron/reconcile` | 10 min | Recuperar pagos cuyo webhook se perdió, y expirar los abandonados |
-| `/api/cron/cleanup` | diario | Retención de `order_events` y `platform_audit_log` |
+Bajarlos a una vez por día tampoco era opción, porque rompe el producto:
+`reconcile` es la única red cuando se pierde el webhook de Mercado Pago, así
+que el cliente paga y la cocina se entera al otro día.
+
+Los handlers **no cambiaron**: siguen exportando `GET` y comparando
+`CRON_SECRET` en tiempo constante. Lo único que cambió es quién los llama.
+Volver a Vercel Cron el día que se pase a Pro es borrar los schedules y
+devolver las entradas a `vercel.json`.
+
+| Ruta | Cada | Quién lo dispara | Para qué |
+|---|---|---|---|
+| `/api/cron/outbox` | 2 min | pg_cron | Entregar `order_events` al POS del local |
+| `/api/cron/reconcile` | 10 min | pg_cron | Recuperar pagos cuyo webhook se perdió, y expirar los abandonados |
+| `/api/cron/auto-advance` | 2 min | pg_cron | Auto-comenzar y auto-listo, opt-in por tienda |
+| `/api/cron/cleanup` | diario | **Vercel Cron** | Retención de `order_events`, `platform_audit_log` y `rate_limits` |
 
 El de conciliación existe porque el webhook era el **único** camino a "pagado":
 si fallaba por algo transitorio, el cliente había pagado y la cocina no se
 enteraba nunca.
 
+**`app_base_url` y `cron_secret` viven en Vault**, no en la migración: una es
+distinta por entorno y la otra es un secreto. Sin cargarlas, los jobs fallan con
+un mensaje que nombra la clave que falta — a propósito, porque la alternativa
+(devolver null) arma la URL `null/api/cron/outbox` y sale como un 404 que no
+menciona Vault en ningún lado.
+
+**`net.http_get` es asíncrono**: encola y vuelve, así que el job nunca ve el
+status code. Es aceptable porque los tres handlers son idempotentes y el
+próximo tick reintenta, pero significa que cuando un barrido "no hizo nada" hay
+que mirar `net._http_response`, no los logs de la app.
+
+**Trampa**: pg_net crea SIEMPRE su propio schema `net` y ahí viven `http_get` y
+`http_post`, sin importar el `with schema` que se le pase. Llamarlas como
+`extensions.http_get` da `function does not exist`.
+
 ---
 
 ## Modelo de datos
 
-19 tablas en `supabase/migrations/`. Convenciones: `bigint identity` como PK,
+21 tablas en `supabase/migrations/`. Convenciones: `bigint identity` como PK,
 centavos, `timestamptz` siempre, snake_case, índice en **toda** FK.
 
 - **Plataforma**: `platform_admins`, `platform_audit_log`, `signup_allowlist`
@@ -309,6 +336,7 @@ centavos, `timestamptz` siempre, snake_case, índice en **toda** FK.
 - **Catálogo**: `categories`, `products`, `option_groups`, `options`
 - **Pedidos**: `orders`, `order_items`, `order_item_options`, `payments`
 - **Integración**: `order_events` (outbox), `notifications`, `pos_endpoints`
+- **Operación**: `rate_limits` (baldes; `subject` es un HMAC, nunca el valor crudo)
 
 ### Los dos identificadores del pedido
 - `short_code` — 4 chars, para cantar en el mostrador. Se repite entre días.

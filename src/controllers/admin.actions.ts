@@ -6,11 +6,13 @@ import { revalidatePath } from 'next/cache'
 import { createClient, getCurrentUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { apexUrl } from '@/lib/urls'
-import { DomainError } from '@/lib/errors'
+import { DomainError, RateLimitError } from '@/lib/errors'
 import { log } from '@/lib/log'
 import { formatDateTimeLong } from '@/lib/dates'
 import { toActionResult } from '@/lib/action-result'
 import { encryptSecret } from '@/lib/crypto/secrets'
+import { consumeRateLimit } from '@/models/rate-limit.model'
+import { RATE_LIMIT_POLICY } from '@/lib/rate-limit-policy'
 import { confirmationCodeSchema, type PendingChangeStarted } from '@/controllers/admin.controller'
 import { getStoreById, requireStoreMembership, updateStoreSettings, upsertBranding } from '@/models/store.model'
 import {
@@ -28,7 +30,37 @@ import {
 } from '@/services/notifications/email/payment-change'
 import { storeSettingsInputSchema, type StoreSettingsInput } from '@/models/schemas/store.schema'
 import type { Branding } from '@/models/schemas/branding.schema'
-import type { ActionResult } from '@/models/types'
+import type { ActionResult, RateLimitBucket } from '@/models/types'
+
+/**
+ * Frase legible en español para el mensaje de un `RateLimitError` (S-06/T4).
+ * No vive en un lugar compartido: cada `.actions.ts` de T4 la duplica como
+ * función privada no exportada, porque un archivo con `'use server'` en la
+ * primera línea solo puede EXPORTAR funciones async (Next lo exige), y mover
+ * este helper a un controller habría significado tocar `admin.controller.ts`,
+ * que no es propiedad de esta tarea.
+ */
+function humanizeRetryAfter(seconds: number): string {
+  if (seconds < 60) return 'unos segundos'
+  const minutes = Math.ceil(seconds / 60)
+  if (minutes < 60) return `${minutes} minuto${minutes === 1 ? '' : 's'}`
+  const hours = Math.ceil(minutes / 60)
+  return `${hours} hora${hours === 1 ? '' : 's'}`
+}
+
+/** Consume un balde y tira `RateLimitError` (429, mensaje en interfaz) si ya no queda cupo. */
+async function consumeOrThrow(
+  bucket: RateLimitBucket,
+  subject: string,
+  message: (retryAfterSeconds: number) => string,
+  onError?: 'allow' | 'deny',
+): Promise<void> {
+  const policy = RATE_LIMIT_POLICY[bucket]
+  const decision = await consumeRateLimit({ bucket, subject, ...policy, onError })
+  if (!decision.allowed) {
+    throw new RateLimitError(message(decision.retryAfterSeconds), decision.retryAfterSeconds)
+  }
+}
 
 /** S-18: los `storeId` llegan tipados `number` solo por TypeScript — un
  * Server Action es un endpoint HTTP más, así que el body real puede traer
@@ -47,32 +79,40 @@ const storeIdSchema = z.number().int().positive()
 const emailSchema = z.email('Ingresá un email válido')
 
 /**
- * Throttle propio del magic link (S-06).
+ * Los 4 baldes del magic link (S-06/T4), consumidos EN ORDEN y con corte
+ * apenas alguno bloquea: así un reintento contra un email ya frenado no sigue
+ * gastando el cupo de `magic_link:ip` ni, sobre todo, el de
+ * `magic_link:global` — que es un PRESUPUESTO compartido con las
+ * invitaciones autenticadas del backoffice, no un límite de abuso (ver
+ * CLAUDE.md). Reemplaza al `Map` en memoria que existía acá: ese contador
+ * vivía en el proceso Node, así que se perdía en cada cold start y cada
+ * instancia de Vercel contaba por su cuenta — el balde real vive en
+ * `public.rate_limits` vía `consumeRateLimit`.
  *
- * `signInWithOtp` corre en un Server Action: Supabase Auth ve SIEMPRE la IP
- * del servidor (Vercel), nunca la del browser que apretó el botón. Su rate
- * limit (30 requests / 5 min POR IP) se agota entonces para todos los dueños
- * de todos los locales a la vez —es el único método de login del panel— y no
- * para un atacante puntual que sí tiene una sola IP.
- *
- * Este throttle es propio: la clave es (email + IP real del cliente, leída de
- * `x-forwarded-for`). Vive en memoria del proceso Node, así que sirve para
- * UNA instancia y se pierde en cada deploy o cold start — es una mitigación
- * de desarrollo, no la solución final. Producción necesita un store
- * compartido (Redis/Upstash) para que todas las instancias de Vercel vean el
- * mismo contador, y Turnstile/hCaptcha en `[auth.captcha]` de Supabase Auth
- * para frenar un script que rota de IP en cada intento.
+ * `onError: 'deny'` en los cuatro (fail-closed): a diferencia de la mayoría
+ * de los baldes del sistema, acá negar por un hipo de Postgres SÍ tiene
+ * consecuencia, porque `signInWithOtp` lo atiende Supabase Auth —un servicio
+ * aparte— y puede seguir mandando mails aunque esta RPC falle. Ver el
+ * comentario largo de `consumeRateLimit` en `rate-limit.model.ts`.
  */
-const MAGIC_LINK_WINDOW_MS = 5 * 60 * 1000
-const MAGIC_LINK_MAX_ATTEMPTS = 5
-const magicLinkAttempts = new Map<string, number[]>()
+async function checkMagicLinkBudget(
+  email: string,
+  ip: string,
+): Promise<{ allowed: true } | { allowed: false; bucket: RateLimitBucket }> {
+  const checks: Array<{ bucket: RateLimitBucket; subject: string }> = [
+    { bucket: 'magic_link:email', subject: email },
+    { bucket: 'magic_link:email:day', subject: email },
+    { bucket: 'magic_link:ip', subject: ip },
+    { bucket: 'magic_link:global', subject: 'global' },
+  ]
 
-function isMagicLinkThrottled(key: string): boolean {
-  const now = Date.now()
-  const recent = (magicLinkAttempts.get(key) ?? []).filter((t) => now - t < MAGIC_LINK_WINDOW_MS)
-  recent.push(now)
-  magicLinkAttempts.set(key, recent)
-  return recent.length > MAGIC_LINK_MAX_ATTEMPTS
+  for (const check of checks) {
+    const policy = RATE_LIMIT_POLICY[check.bucket]
+    const decision = await consumeRateLimit({ ...check, ...policy, onError: 'deny' })
+    if (!decision.allowed) return { allowed: false, bucket: check.bucket }
+  }
+
+  return { allowed: true }
 }
 
 async function clientIp(): Promise<string> {
@@ -113,9 +153,11 @@ export async function requestMagicLinkAction(
   }
 
   const ip = await clientIp()
-  const key = `${parsed.data.toLowerCase()}:${ip}`
-  if (isMagicLinkThrottled(key)) {
-    log.warn('admin.login', 'magic link throttled', { ip })
+  const budget = await checkMagicLinkBudget(parsed.data, ip)
+  if (!budget.allowed) {
+    // Nunca el email ni la IP en el log (regla del repo): el nombre del
+    // balde alcanza para diagnosticar sin crear un registro de PII nuevo.
+    log.warn('admin.login', 'magic link rate-limited', { bucket: budget.bucket })
     return { ok: true, data: undefined }
   }
 
@@ -346,6 +388,19 @@ export async function requestPaymentCredentialsChangeAction(
     const parsed = paymentCredentialsSchema.parse(input)
     await assertValidMercadoPagoToken(parsed.accessToken)
 
+    // `payment_change:store` fail-closed (S-08/T4): este camino toca las
+    // credenciales de cobro, así que ante un hipo de Postgres se rechaza en
+    // vez de dejar pasar (00-architecture.md §5.3). Va DESPUÉS de validar el
+    // token contra Mercado Pago: no tiene sentido gastar el cupo de 3/hora en
+    // un request que ya iba a fallar por otro motivo.
+    await consumeOrThrow(
+      'payment_change:store',
+      String(id),
+      (s) =>
+        `Ya pediste demasiados cambios de método de cobro para este local. Probá de nuevo en ${humanizeRetryAfter(s)}.`,
+      'deny',
+    )
+
     return startPendingChange({
       storeId: id,
       userId,
@@ -373,6 +428,14 @@ export async function requestCourierPaymentPolicyChangeAction(
     const id = storeIdSchema.parse(storeId)
     const value = z.boolean().parse(courierCollectsPayment)
     const { userId, email, store } = await requireOwnerForPaymentChange(id)
+
+    await consumeOrThrow(
+      'payment_change:store',
+      String(id),
+      (s) =>
+        `Ya pediste demasiados cambios de método de cobro para este local. Probá de nuevo en ${humanizeRetryAfter(s)}.`,
+      'deny',
+    )
 
     return startPendingChange({
       storeId: id,
@@ -459,6 +522,14 @@ export async function resendPendingChangeCodeAction(
       throw new DomainError('Esa solicitud ya venció. Volvé a empezar el cambio.', { status: 400 })
     }
 
+    await consumeOrThrow(
+      'payment_change:store',
+      String(id),
+      (s) =>
+        `Ya pediste demasiados cambios de método de cobro para este local. Probá de nuevo en ${humanizeRetryAfter(s)}.`,
+      'deny',
+    )
+
     return startPendingChange({
       storeId: id,
       userId,
@@ -489,14 +560,23 @@ const supportMessageSchema = z
   .max(2000, 'El mensaje es muy largo: contanos lo esencial en menos de 2000 caracteres.')
 
 /**
- * Un pedido de soporte cada dos minutos por local. Mismo throttle en memoria
- * que el magic link y con la misma limitación honesta: vive en el proceso Node,
- * así que sirve para UNA instancia y se pierde en cada deploy. Alcanza para lo
- * que tiene que frenar —un doble tap y un dueño ansioso— y no para un abuso
- * decidido, que igual necesitaría una sesión de staff válida.
+ * Un pedido de soporte cada dos minutos por local, más un tope diario
+ * (`support:store` + `support:store:day`). Reemplaza al `Map` en memoria que
+ * había acá: mismo problema que el del magic link, se perdía en cada cold
+ * start y no se compartía entre instancias de Vercel.
  */
-const SUPPORT_WINDOW_MS = 2 * 60 * 1000
-const supportRequests = new Map<number, number>()
+async function consumeSupportBudget(storeId: number): Promise<void> {
+  await consumeOrThrow(
+    'support:store',
+    String(storeId),
+    (s) => `Ya recibimos tu pedido. Te contestamos al mail apenas lo veamos. Escribinos de nuevo en ${humanizeRetryAfter(s)} si hace falta.`,
+  )
+  await consumeOrThrow(
+    'support:store:day',
+    String(storeId),
+    (s) => `Ya mandaste muchos pedidos de soporte hoy. Probá de nuevo en ${humanizeRetryAfter(s)}.`,
+  )
+}
 
 export async function requestPaymentSupportAction(storeId: number, message: string): Promise<ActionResult> {
   return toActionResult(async () => {
@@ -504,10 +584,7 @@ export async function requestPaymentSupportAction(storeId: number, message: stri
     const parsedMessage = supportMessageSchema.parse(message)
     const { role } = await requireStoreMembership(id)
 
-    const last = supportRequests.get(id)
-    if (last && Date.now() - last < SUPPORT_WINDOW_MS) {
-      throw new DomainError('Ya recibimos tu pedido. Te contestamos al mail apenas lo veamos.', { status: 429 })
-    }
+    await consumeSupportBudget(id)
 
     const user = await getCurrentUser()
     const store = await getStoreById(id)
@@ -534,6 +611,7 @@ export async function requestPaymentSupportAction(storeId: number, message: stri
     // El `skipped` (sin Resend configurado) NO se le muestra como error al
     // dueño: en producción no pasa, y en desarrollo un error acá no le sirve a
     // nadie. Queda en los logs, que es donde lo va a buscar quien configura.
-    supportRequests.set(id, Date.now())
+    // El balde ya se consumió arriba, antes de mandar: no hace falta marcar
+    // nada acá.
   }, 'admin.requestPaymentSupport')
 }

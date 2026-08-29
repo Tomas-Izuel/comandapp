@@ -5,15 +5,53 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { createClient } from '@/lib/supabase/server'
-import { DomainError } from '@/lib/errors'
+import { DomainError, RateLimitError } from '@/lib/errors'
 import { toActionResult } from '@/lib/action-result'
-import { createStoreWithOwner, setStoreStatus, getPlatformStoreById, resendOwnerInvite } from '@/models/platform.model'
+import { consumeRateLimit } from '@/models/rate-limit.model'
+import { RATE_LIMIT_POLICY } from '@/lib/rate-limit-policy'
+import {
+  createStoreWithOwner,
+  setStoreStatus,
+  getPlatformStoreById,
+  resendOwnerInvite,
+  requirePlatformAdmin,
+} from '@/models/platform.model'
 import type { CreateStoreInput } from '@/models/schemas/platform.schema'
-import type { ActionResult, StoreStatus } from '@/models/types'
+import type { ActionResult, RateLimitBucket, StoreStatus } from '@/models/types'
 import type { CreateStoreResult } from '@/controllers/platform.controller'
 
 /** S-18: los `storeId` llegan tipados `number` solo por TypeScript. */
 const storeIdSchema = z.number().int().positive()
+
+/**
+ * Frase legible en español para el mensaje de un `RateLimitError` (T4).
+ * Duplicada (no exportada) en cada `.actions.ts` de esta tarea — ver el
+ * comentario largo en `admin.actions.ts` sobre por qué no vive en un lugar
+ * compartido.
+ */
+function humanizeRetryAfter(seconds: number): string {
+  if (seconds < 60) return 'unos segundos'
+  const minutes = Math.ceil(seconds / 60)
+  if (minutes < 60) return `${minutes} minuto${minutes === 1 ? '' : 's'}`
+  const hours = Math.ceil(minutes / 60)
+  return `${hours} hora${hours === 1 ? '' : 's'}`
+}
+
+/** Consume un balde y tira `RateLimitError` (429, mensaje en interfaz) si ya no queda cupo. */
+async function consumeOrThrow(
+  bucket: RateLimitBucket,
+  subject: string,
+  message: (retryAfterSeconds: number) => string,
+): Promise<void> {
+  const policy = RATE_LIMIT_POLICY[bucket]
+  const decision = await consumeRateLimit({ bucket, subject, ...policy })
+  if (!decision.allowed) {
+    throw new RateLimitError(message(decision.retryAfterSeconds), decision.retryAfterSeconds)
+  }
+}
+
+const ownerInviteAdminMessage = (s: number) =>
+  `Ya diste de alta o reenviaste demasiadas invitaciones esta hora. Probá de nuevo en ${humanizeRetryAfter(s)}.`
 
 /**
  * IP y user agent reales del navegador que disparó la acción, para
@@ -36,8 +74,19 @@ export async function signOutAction(): Promise<void> {
   redirect('/backoffice/login')
 }
 
+/**
+ * `owner_invite:store` no se puede consumir acá todavía: la tienda no existe
+ * hasta que `createStoreWithOwner` la crea. La superficie de abuso real en
+ * este camino es "un admin da de alta tiendas (= invitaciones) en ráfaga", y
+ * eso lo cubre `owner_invite:admin`, keyed por el admin de la sesión.
+ * `resendOwnerInviteAction` es quien consume `owner_invite:store`, una vez
+ * que el `store_id` ya existe.
+ */
 export async function createStoreAction(input: CreateStoreInput): Promise<CreateStoreResult> {
   return toActionResult(async () => {
+    const { userId } = await requirePlatformAdmin()
+    await consumeOrThrow('owner_invite:admin', userId, ownerInviteAdminMessage)
+
     const audit = await auditContext()
     const { storeId } = await createStoreWithOwner(input, audit)
     revalidatePath('/backoffice/tiendas')
@@ -84,6 +133,15 @@ export async function setStoreStatusAction(
 export async function resendOwnerInviteAction(storeId: number): Promise<ActionResult<void>> {
   return toActionResult(async () => {
     const id = storeIdSchema.parse(storeId)
+    const { userId } = await requirePlatformAdmin()
+
+    await consumeOrThrow(
+      'owner_invite:store',
+      String(id),
+      (s) => `Ya reenviaste demasiadas invitaciones para esta tienda. Probá de nuevo en ${humanizeRetryAfter(s)}.`,
+    )
+    await consumeOrThrow('owner_invite:admin', userId, ownerInviteAdminMessage)
+
     const audit = await auditContext()
     await resendOwnerInvite(id, audit)
   }, 'platform.resendOwnerInvite')
