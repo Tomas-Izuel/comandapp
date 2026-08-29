@@ -2,15 +2,14 @@
 
 import { z } from 'zod'
 import { toActionResult } from '@/lib/action-result'
-import { log } from '@/lib/log'
-import { serverEnv } from '@/lib/env.server'
 import { requireStoreMembership } from '@/models/store.model'
-import { updateOrderStatus, markPaidInStore, getActiveOrders, getOrderWithStoreById } from '@/models/order.model'
-import { getNotifier, type NotificationResult } from '@/services/notifications'
-import { getEmailSender } from '@/services/notifications/email'
+import { updateOrderStatus, markPaidInStore, getActiveOrders } from '@/models/order.model'
+import { assignCourier, listCouriersForAssignment } from '@/models/dispatch.model'
+import { dispatchReadyNotification, dispatchOnTheWayNotification } from '@/controllers/kitchen.controller'
+import { type NotificationResult } from '@/services/notifications'
 import { orderStatusSchema, type OrderStatus } from '@/models/schemas/order.schema'
-import type { ActionResult, Order, Store } from '@/models/types'
-import type { EmailVars } from '@/services/notifications/email/email.port'
+import { assignCourierSchema } from '@/models/schemas/courier.schema'
+import type { ActionResult, CourierRow, Order } from '@/models/types'
 
 /**
  * Panel de cocina (KDS) e historial.
@@ -60,86 +59,25 @@ export async function updateOrderStatusAction(p: {
       await requireStoreMembership(storeId)
       await updateOrderStatus(orderId, status)
 
-      if (status !== 'ready') return { notification: null }
-
-      const found = await getOrderWithStoreById(orderId)
-      // No debería pasar —el update de arriba ya tocó esta fila—, pero antes
-      // de mandar un WhatsApp o un mail a quien sea, mejor no notificar que
-      // notificar con datos de otra tienda.
-      if (!found || found.order.storeId !== storeId) {
-        log.error('kitchen.updateOrderStatus', 'pedido no encontrado tras marcarlo "listo"', undefined, {
-          storeId,
-          orderId,
-        })
-        return { notification: null }
+      // Se pasa `storeId` en los dos casos porque acá viene del browser y hay
+      // que verificarlo antes de mandarle un mensaje a nadie. `dispatchReady...`
+      // se auto-degrada a `null` para pedidos de delivery: la guarda vive ahí,
+      // no acá, porque el cron de auto-listo pasa por el mismo camino.
+      if (status === 'ready') {
+        const notification = await dispatchReadyNotification(orderId, storeId)
+        return { notification }
       }
 
-      const { order, store } = found
-      const site = serverEnv().NEXT_PUBLIC_SITE_URL
-      const trackingUrl = `${site}/pedido/${order.publicToken}`
+      if (status === 'on_the_way') {
+        const notification = await dispatchOnTheWayNotification(orderId, storeId)
+        return { notification }
+      }
 
-      const notification = await getNotifier().notify({
-        storeId: order.storeId,
-        orderId: order.id,
-        toPhoneE164: order.customerPhoneE164,
-        template: 'order_ready',
-        vars: {
-          customerName: order.customerName,
-          storeName: store.name,
-          shortCode: order.shortCode,
-          trackingUrl,
-          etaMinutes: order.etaMinutes ?? undefined,
-        },
-      })
-
-      await sendReadyEmail(order, store, trackingUrl)
-
-      return { notification }
+      return { notification: null }
     },
     'kitchen.updateOrderStatus',
     { storeId: p.storeId, orderId: p.orderId },
   )
-}
-
-/**
- * El resultado del envío nunca puede cambiar el resultado de la operación: un
- * mail que falla no puede bloquear ni revertir el cambio de estado a
- * "listo", que ya se persistió arriba. El sender ya devuelve
- * 'skipped'/'failed' en vez de tirar; el try/catch es la segunda red.
- */
-async function sendReadyEmail(order: Order, store: Store, trackingUrl: string): Promise<void> {
-  if (!order.customerEmail) return
-  const vars: EmailVars = {
-    customerName: order.customerName,
-    storeName: store.name,
-    storeSlug: store.slug,
-    storeAddress: store.address,
-    shortCode: order.shortCode,
-    trackingUrl,
-    etaMinutes: order.etaMinutes ?? undefined,
-    paymentMethod: order.paymentMethod,
-    paymentPending: order.paymentStatus !== 'approved',
-    currency: order.currency,
-    items: order.items.map((item) => ({
-      name: item.nameSnapshot,
-      quantity: item.quantity,
-      totalCents: item.totalCents,
-      options: item.options.length > 0 ? item.options.map((o) => o.nameSnapshot) : undefined,
-    })),
-    subtotalCents: order.subtotalCents,
-    totalCents: order.totalCents,
-  }
-  try {
-    await getEmailSender().send({
-      storeId: order.storeId,
-      orderId: order.id,
-      to: order.customerEmail,
-      template: 'order_ready',
-      vars,
-    })
-  } catch (err) {
-    log.error('kitchen.sendReadyEmail', 'no se pudo mandar el aviso de "listo" por mail', err, { orderId: order.id })
-  }
 }
 
 /** Refetch completo para el cliente Realtime: lo llama tanto el push de Supabase como el polling de respaldo. */
@@ -169,5 +107,47 @@ export async function markPaidInStoreAction(p: { storeId: number; orderId: numbe
     },
     'kitchen.markPaidInStore',
     { storeId: p.storeId, orderId: p.orderId },
+  )
+}
+
+/**
+ * Asigna (o desasigna, con `courierId: null`) un repartidor a un pedido.
+ *
+ * `courier_id` no está en el `grant update` de `orders` para `authenticated`
+ * —el browser del staff solo escribe `status`—, así que el modelo va con el
+ * cliente admin detrás de esta verificación de membresía. La invariante "es
+ * repartidor activo de ESTA tienda" la valida el trigger, no esta acción.
+ */
+export async function assignCourierAction(p: {
+  storeId: number
+  orderId: number
+  courierId: number | null
+}): Promise<ActionResult> {
+  return toActionResult(
+    async () => {
+      const input = assignCourierSchema.parse(p)
+      await requireStoreMembership(input.storeId)
+      await assignCourier(input.storeId, input.orderId, input.courierId)
+    },
+    'kitchen.assignCourier',
+    { storeId: p.storeId, orderId: p.orderId },
+  )
+}
+
+/**
+ * Repartidores de la tienda para poblar el selector de asignación del KDS,
+ * con su carga actual. Lo puede pedir cualquier staff, no solo el dueño — ver
+ * el comentario de `listCouriersForAssignment` para por qué no usa la RPC
+ * `store_couriers`.
+ */
+export async function fetchStoreCouriersAction(storeId: number): Promise<ActionResult<CourierRow[]>> {
+  return toActionResult(
+    async () => {
+      const store = positiveId.parse(storeId)
+      await requireStoreMembership(store)
+      return listCouriersForAssignment(store)
+    },
+    'kitchen.fetchStoreCouriers',
+    { storeId },
   )
 }

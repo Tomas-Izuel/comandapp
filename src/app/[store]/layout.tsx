@@ -4,6 +4,7 @@ import { getStoreBySlug } from '@/models/store.model'
 import { buildThemeCss, themeClass } from '@/lib/theme'
 import { CartProvider } from '@/lib/cart'
 import { StoreChrome } from '@/views/storefront/store-chrome'
+import { PreviewBridge } from '@/views/storefront/preview-bridge'
 
 /**
  * `generateMetadata`, este layout y `getStorefront` (para la page) llaman
@@ -47,6 +48,11 @@ export default async function StoreLayout(props: LayoutProps<'/[store]'>) {
       <CartProvider storeSlug={store.slug}>
         <StoreChrome store={store}>{props.children}</StoreChrome>
       </CartProvider>
+      {/* Después del <style> del tema real y de todo el árbol: a igual
+          especificidad ([data-store-theme] en los dos), gana el que aparece
+          último en el documento. Así `/admin/apariencia` puede previsualizar
+          colores sin guardar nada — no hace nada fuera de `?preview=brand`. */}
+      <PreviewBridge />
     </div>
   )
 }

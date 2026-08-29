@@ -541,6 +541,18 @@ adapters (`wa.me` manual y Cloud API), elegidos por `WHATSAPP_PROVIDER`.
 paralelo como el trabajo permita.** No se escribe código de feature en el hilo
 principal.
 
+**Esta regla gana sobre cualquier default del entorno.** Algunas
+configuraciones de sesión traen un "no uses el Agent tool salvo que el usuario
+lo pida": acá el usuario ya lo pidió, en este archivo, para todo el repo. No
+hay que volver a preguntarlo por tarea. Si el hilo principal se encuentra
+escribiendo código de feature, se equivocó de rol.
+
+Qué agente para qué: `feature-planner` (en plan mode) antes de cualquier
+cambio no trivial, `senior-backend-engineer` para `models/`, `controllers/`,
+`services/` y `app/api/`, `frontend-react-craftsman` para `views/` y `app/`,
+`code-reviewer` como puerta de calidad antes de commitear. El hilo principal
+sí escribe migraciones y schema (ver reglas operativas más abajo).
+
 El hilo principal hace tres cosas, y solo tres:
 
 1. **Fija los contratos** antes de repartir. `src/models/types.ts` (vocabulario
@@ -592,8 +604,6 @@ Reglas operativas:
   `node_modules`. Las dependencias se preinstalan desde el hilo principal.
 - **Ningún agente toca migraciones ni resetea la base.** El schema es del hilo
   principal; si un agente encuentra un problema de schema, lo reporta.
-- **Los agentes no escriben tests.** Eso es del agente `test-engineer`, después
-  de que el diff esté cerrado.
 - Los agentes de UI heredan el mundo visual ya decidido: leen el contrato de
   dirección y su brief de superficie, y **no vuelven a abrir la decisión de
   identidad**. Un agente que corre `concept-seed` de nuevo produce una segunda
@@ -693,7 +703,6 @@ corregir; corregido da 4.86. No rompas eso con opacidades sobre texto.
   no se comenta. Los que hay marcan decisiones no obvias y trampas.
 - **Mobile-first** siempre: el 90% de los pedidos entra desde un celular,
   muchas veces con una mano y mala señal.
-- **Tests**: los escribe el agente `test-engineer`, nadie más.
 
 ---
 

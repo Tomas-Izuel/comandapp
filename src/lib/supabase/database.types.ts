@@ -386,15 +386,24 @@ export type Database = {
       }
       orders: {
         Row: {
+          assigned_at: string | null
           base_prep_minutes: number | null
           cancelled_at: string | null
           confirmed_at: string | null
+          courier_id: number | null
           created_at: string
           currency: string
           customer_email: string | null
           customer_name: string
           customer_phone_e164: string
           delivered_at: string | null
+          delivery_address_between: string | null
+          delivery_address_line: string | null
+          delivery_address_notes: string | null
+          delivery_address_unit: string | null
+          delivery_fee_cents: number
+          delivery_method: string
+          delivery_minutes: number | null
           demand_multiplier: number | null
           eta_at: string | null
           eta_minutes: number | null
@@ -404,6 +413,7 @@ export type Database = {
           idempotency_key: string
           needs_refund_at: string | null
           notes: string | null
+          on_the_way_at: string | null
           paid_at: string | null
           payment_method: string
           payment_provider: string
@@ -423,15 +433,24 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          assigned_at?: string | null
           base_prep_minutes?: number | null
           cancelled_at?: string | null
           confirmed_at?: string | null
+          courier_id?: number | null
           created_at?: string
           currency?: string
           customer_email?: string | null
           customer_name: string
           customer_phone_e164: string
           delivered_at?: string | null
+          delivery_address_between?: string | null
+          delivery_address_line?: string | null
+          delivery_address_notes?: string | null
+          delivery_address_unit?: string | null
+          delivery_fee_cents?: number
+          delivery_method?: string
+          delivery_minutes?: number | null
           demand_multiplier?: number | null
           eta_at?: string | null
           eta_minutes?: number | null
@@ -441,6 +460,7 @@ export type Database = {
           idempotency_key: string
           needs_refund_at?: string | null
           notes?: string | null
+          on_the_way_at?: string | null
           paid_at?: string | null
           payment_method?: string
           payment_provider?: string
@@ -460,15 +480,24 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          assigned_at?: string | null
           base_prep_minutes?: number | null
           cancelled_at?: string | null
           confirmed_at?: string | null
+          courier_id?: number | null
           created_at?: string
           currency?: string
           customer_email?: string | null
           customer_name?: string
           customer_phone_e164?: string
           delivered_at?: string | null
+          delivery_address_between?: string | null
+          delivery_address_line?: string | null
+          delivery_address_notes?: string | null
+          delivery_address_unit?: string | null
+          delivery_fee_cents?: number
+          delivery_method?: string
+          delivery_minutes?: number | null
           demand_multiplier?: number | null
           eta_at?: string | null
           eta_minutes?: number | null
@@ -478,6 +507,7 @@ export type Database = {
           idempotency_key?: string
           needs_refund_at?: string | null
           notes?: string | null
+          on_the_way_at?: string | null
           paid_at?: string | null
           payment_method?: string
           payment_provider?: string
@@ -497,6 +527,13 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "orders_courier_id_fkey"
+            columns: ["courier_id"]
+            isOneToOne: false
+            referencedRelation: "store_members"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "orders_store_id_fkey"
             columns: ["store_id"]
@@ -755,6 +792,7 @@ export type Database = {
           color_foreground: string
           color_primary: string
           color_primary_foreground: string
+          density: string
           favicon_url: string | null
           font_body: string
           font_heading: string
@@ -772,6 +810,7 @@ export type Database = {
           color_foreground?: string
           color_primary?: string
           color_primary_foreground?: string
+          density?: string
           favicon_url?: string | null
           font_body?: string
           font_heading?: string
@@ -789,6 +828,7 @@ export type Database = {
           color_foreground?: string
           color_primary?: string
           color_primary_foreground?: string
+          density?: string
           favicon_url?: string | null
           font_body?: string
           font_heading?: string
@@ -813,21 +853,30 @@ export type Database = {
       store_members: {
         Row: {
           created_at: string
+          display_name: string | null
           id: number
+          invited_at: string | null
+          is_active: boolean
           role: string
           store_id: number
           user_id: string
         }
         Insert: {
           created_at?: string
+          display_name?: string | null
           id?: never
+          invited_at?: string | null
+          is_active?: boolean
           role?: string
           store_id: number
           user_id: string
         }
         Update: {
           created_at?: string
+          display_name?: string | null
           id?: never
+          invited_at?: string | null
+          is_active?: boolean
           role?: string
           store_id?: number
           user_id?: string
@@ -883,61 +932,156 @@ export type Database = {
           },
         ]
       }
+      store_pending_changes: {
+        Row: {
+          attempts: number
+          code_hash: string
+          consumed_at: string | null
+          created_at: string
+          expires_at: string
+          id: number
+          kind: string
+          payload: Json
+          requested_by: string
+          store_id: number
+        }
+        Insert: {
+          attempts?: number
+          code_hash: string
+          consumed_at?: string | null
+          created_at?: string
+          expires_at: string
+          id?: never
+          kind: string
+          payload: Json
+          requested_by: string
+          store_id: number
+        }
+        Update: {
+          attempts?: number
+          code_hash?: string
+          consumed_at?: string | null
+          created_at?: string
+          expires_at?: string
+          id?: never
+          kind?: string
+          payload?: Json
+          requested_by?: string
+          store_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_pending_changes_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       stores: {
         Row: {
           accepting_orders: boolean
           address: string | null
+          auto_ready_orders: boolean
+          auto_start_orders: boolean
+          courier_collects_payment: boolean
           created_at: string
           currency: string
+          delivery_busy_minutes: number
+          delivery_enabled: boolean
+          delivery_fee_cents: number
+          delivery_free_from_cents: number
+          delivery_min_order_cents: number
+          delivery_minutes: number
           demand_multiplier: number
           demand_threshold_orders: number
           description: string | null
           id: number
           in_store_payment_enabled: boolean
+          instagram_handle: string | null
+          latitude: number | null
+          longitude: number | null
+          maps_url: string | null
           min_order_cents: number
           name: string
+          pedidos_ya_url: string | null
           phone_e164: string | null
+          rappi_url: string | null
           slug: string
           status: string
           timezone: string
+          uber_eats_url: string | null
           updated_at: string
           whatsapp_phone_e164: string | null
         }
         Insert: {
           accepting_orders?: boolean
           address?: string | null
+          auto_ready_orders?: boolean
+          auto_start_orders?: boolean
+          courier_collects_payment?: boolean
           created_at?: string
           currency?: string
+          delivery_busy_minutes?: number
+          delivery_enabled?: boolean
+          delivery_fee_cents?: number
+          delivery_free_from_cents?: number
+          delivery_min_order_cents?: number
+          delivery_minutes?: number
           demand_multiplier?: number
           demand_threshold_orders?: number
           description?: string | null
           id?: never
           in_store_payment_enabled?: boolean
+          instagram_handle?: string | null
+          latitude?: number | null
+          longitude?: number | null
+          maps_url?: string | null
           min_order_cents?: number
           name: string
+          pedidos_ya_url?: string | null
           phone_e164?: string | null
+          rappi_url?: string | null
           slug: string
           status?: string
           timezone?: string
+          uber_eats_url?: string | null
           updated_at?: string
           whatsapp_phone_e164?: string | null
         }
         Update: {
           accepting_orders?: boolean
           address?: string | null
+          auto_ready_orders?: boolean
+          auto_start_orders?: boolean
+          courier_collects_payment?: boolean
           created_at?: string
           currency?: string
+          delivery_busy_minutes?: number
+          delivery_enabled?: boolean
+          delivery_fee_cents?: number
+          delivery_free_from_cents?: number
+          delivery_min_order_cents?: number
+          delivery_minutes?: number
           demand_multiplier?: number
           demand_threshold_orders?: number
           description?: string | null
           id?: never
           in_store_payment_enabled?: boolean
+          instagram_handle?: string | null
+          latitude?: number | null
+          longitude?: number | null
+          maps_url?: string | null
           min_order_cents?: number
           name?: string
+          pedidos_ya_url?: string | null
           phone_e164?: string | null
+          rappi_url?: string | null
           slug?: string
           status?: string
           timezone?: string
+          uber_eats_url?: string | null
           updated_at?: string
           whatsapp_phone_e164?: string | null
         }
@@ -948,6 +1092,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      advance_auto_orders: { Args: never; Returns: Json }
       claim_event_deliveries: {
         Args: {
           p_limit?: number
@@ -995,10 +1140,24 @@ export type Database = {
           isSetofReturn: true
         }
       }
+      claim_store_pending_change: {
+        Args: { p_id: number; p_store_id: number; p_user_id: string }
+        Returns: {
+          attempts: number
+          code_hash: string
+          kind: string
+          payload: Json
+        }[]
+      }
       cleanup_old_records: {
         Args: { p_audit_days?: number; p_event_days?: number }
         Returns: Json
       }
+      courier_advance_order: {
+        Args: { p_collected?: boolean; p_order_id: number; p_status: string }
+        Returns: undefined
+      }
+      courier_queue: { Args: never; Returns: Json }
       create_order: { Args: { p_items: Json; p_order: Json }; Returns: number }
       expire_pending_orders: { Args: { p_minutes?: number }; Returns: number }
       platform_metrics: { Args: never; Returns: Json }
@@ -1021,6 +1180,11 @@ export type Database = {
         }
         Returns: undefined
       }
+      store_courier_availability: {
+        Args: { p_store_id: number }
+        Returns: Json
+      }
+      store_couriers: { Args: { p_store_id: number }; Returns: Json }
       store_dashboard: {
         Args: { p_days?: number; p_store_id: number }
         Returns: Json

@@ -9,6 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/views/shared/states'
 import { Panel } from '@/views/shared/surfaces'
+import { PanelHeading } from '@/views/admin/page-frame'
 import { cn } from '@/lib/utils'
 import { ConfirmDeleteButton } from './confirm-delete-button'
 import { ProductRow } from './product-row'
@@ -73,37 +74,58 @@ export function CategoryList({
           }
         />
       ) : (
-        <>
-          {categories.map((category) => (
-            <CategoryBand
-              key={category.id}
-              storeId={storeId}
-              currency={currency}
-              category={category}
-              expanded={expanded.has(category.id)}
-              onToggle={() => toggle(category.id)}
-              onAddProduct={() => openCreate(category.id)}
-              onEditProduct={openEdit}
-            />
-          ))}
+        /*
+         * Topología ≥lg: dos columnas, no una grilla de tarjetas.
+         *
+         * Se descartó el master-detail (categoría seleccionada a la
+         * izquierda, productos a la derecha) porque cambia el modelo de
+         * interacción existente: hoy se puede tener más de una categoría
+         * abierta a la vez (útil al mover un producto de categoría, por
+         * ejemplo), y un maestro-detalle obliga a una sola visible.
+         *
+         * En cambio, el ancho se aprovecha en dos frentes que no tocan esa
+         * interacción: (1) un índice de categorías fijo a la izquierda —
+         * `CategoryNavRail`— para saltar directo a una sin scrollear, que es
+         * exactamente lo que necesita el encargado que retoma el catálogo
+         * después de atender a alguien en el mostrador; y (2) más columnas de
+         * información por fila de producto (ver `product-row.tsx`), no
+         * tarjetas. El índice solo aparece con categorías creadas: con cero
+         * no hay nada que indexar.
+         */
+        <div className="lg:grid lg:grid-cols-[16rem_1fr] lg:items-start lg:gap-6">
+          {categories.length > 0 ? <CategoryNavRail categories={categories} /> : null}
+          <div className="flex flex-col gap-4">
+            {categories.map((category) => (
+              <CategoryBand
+                key={category.id}
+                storeId={storeId}
+                currency={currency}
+                category={category}
+                expanded={expanded.has(category.id)}
+                onToggle={() => toggle(category.id)}
+                onAddProduct={() => openCreate(category.id)}
+                onEditProduct={openEdit}
+              />
+            ))}
 
-          {addingCategory ? (
-            <NewCategoryForm
-              storeId={storeId}
-              position={categories.length}
-              onCreated={() => {
-                setAddingCategory(false)
-                router.refresh()
-              }}
-              onCancel={() => setAddingCategory(false)}
-            />
-          ) : (
-            <Button type="button" variant="outline" onClick={() => setAddingCategory(true)} className="w-fit gap-1.5">
-              <Plus className="size-4" />
-              Nueva categoría
-            </Button>
-          )}
-        </>
+            {addingCategory ? (
+              <NewCategoryForm
+                storeId={storeId}
+                position={categories.length}
+                onCreated={() => {
+                  setAddingCategory(false)
+                  router.refresh()
+                }}
+                onCancel={() => setAddingCategory(false)}
+              />
+            ) : (
+              <Button type="button" variant="outline" onClick={() => setAddingCategory(true)} className="w-fit gap-1.5">
+                <Plus className="size-4" />
+                Nueva categoría
+              </Button>
+            )}
+          </div>
+        </div>
       )}
 
       <ProductDrawer
@@ -119,6 +141,44 @@ export function CategoryList({
         onSaved={handleSaved}
       />
     </div>
+  )
+}
+
+/**
+ * Índice de categorías, solo ≥lg (debajo, la nav es el riel horizontal del
+ * chasis y esto le competiría el ancho). Fijo con `sticky`: el offset usa la
+ * variable que expone el chasis (`--admin-header-h`), no un valor propio,
+ * porque el alto de su encabezado pegajoso puede cambiar.
+ */
+function CategoryNavRail({ categories }: { categories: MenuCategory[] }) {
+  return (
+    <nav
+      aria-label="Índice de categorías"
+      className="sticky top-(--admin-header-h) hidden max-h-[calc(100dvh-var(--admin-header-h)-1.5rem)] flex-col overflow-y-auto pb-4 lg:flex"
+    >
+      <PanelHeading as="h3" title="Categorías" className="mb-1" />
+      {categories.map((category) => {
+        const missingPhotoCount = category.products.filter((p) => !p.imageUrl).length
+        return (
+          <a
+            key={category.id}
+            href={`#categoria-${category.id}`}
+            className={cn(
+              'flex min-h-11 items-center justify-between gap-2 rounded-md px-2.5 text-sm transition-colors duration-(--dur-fast) hover:bg-muted',
+              category.isActive ? 'text-foreground' : 'text-muted-foreground',
+            )}
+          >
+            <span className="truncate">{category.name}</span>
+            <span className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs">
+              {missingPhotoCount > 0 ? (
+                <ImageOff className="text-warning-foreground size-3" strokeWidth={2} aria-hidden />
+              ) : null}
+              <span className="tabular">{category.products.length}</span>
+            </span>
+          </a>
+        )
+      })}
+    </nav>
   )
 }
 
@@ -210,7 +270,15 @@ function CategoryBand({
   const missingPhotoCount = category.products.filter((p) => !p.imageUrl).length
 
   return (
-    <Panel elevated={false} className="overflow-hidden">
+    <Panel
+      elevated={false}
+      className="overflow-hidden"
+      id={`categoria-${category.id}`}
+      // El índice de la izquierda salta acá con un ancla (`href="#categoria-…"`):
+      // sin este margen, el scroll deja la fila tapada bajo el encabezado
+      // pegajoso del chasis.
+      style={{ scrollMarginTop: 'var(--admin-header-h)' }}
+    >
       <div className="flex items-center gap-1 py-1 pr-3 pl-1">
         <Button
           type="button"
@@ -245,7 +313,7 @@ function CategoryBand({
             </span>
             <span className="text-muted-foreground tabular text-xs">({category.products.length})</span>
             {!category.isActive ? (
-              <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs">Oculta</span>
+              <span className="bg-muted text-muted-foreground rounded-pill px-2 py-0.5 text-xs">Oculta</span>
             ) : null}
             {missingPhotoCount > 0 ? (
               <span className="text-warning-foreground inline-flex items-center gap-1 text-xs">

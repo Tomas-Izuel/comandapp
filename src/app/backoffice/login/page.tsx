@@ -8,12 +8,16 @@ export const metadata: Metadata = { title: 'Ingresar — Backoffice' }
 
 /**
  * `error` viene del callback de Google (`/backoffice/auth/callback`) cuando
- * el intercambio del `code` falla. Mismo patrón que `/admin/acceso`: un mapa
- * de código → mensaje en español, nunca el detalle crudo de Supabase.
+ * el intercambio del `code` falla, o de `requireBackofficeSession()` cuando la
+ * sesión cumplió sus 12 horas. Mismo patrón que `/admin/acceso`: un mapa de
+ * código → mensaje en español, nunca el detalle crudo de Supabase.
  */
 const ERROR_MESSAGES: Record<string, string> = {
   sin_acceso: 'Esa cuenta de Google no tiene acceso al backoffice.',
   google_fallo: 'No pudimos completar el ingreso con Google. Probá de nuevo.',
+  // Es un vencimiento normal, no una falla: el texto tiene que decir eso, o el
+  // admin lee "no tenés acceso" y cree que le sacaron el permiso.
+  sesion_vencida: 'Por seguridad, el backoffice cierra la sesión cada 12 horas. Ingresá de nuevo.',
 }
 
 export default async function BackofficeLoginPage(props: PageProps<'/backoffice/login'>) {

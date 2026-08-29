@@ -31,9 +31,9 @@ export function StatRow({
       )}
     >
       {items.map((item) => (
-        <div key={item.label} className="flex flex-col gap-1 px-4 py-3.5">
-          <p className="text-muted-foreground text-xs font-medium">{item.label}</p>
-          <p className="tabular text-lg font-semibold">{item.value}</p>
+        <div key={item.label} className="flex flex-col gap-1 px-4 py-3.5 lg:px-5 lg:py-4">
+          <p className="text-muted-foreground text-xs font-medium lg:text-sm">{item.label}</p>
+          <p className="tabular text-lg font-semibold lg:text-xl">{item.value}</p>
         </div>
       ))}
     </Panel>

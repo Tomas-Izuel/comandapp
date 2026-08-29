@@ -1,25 +1,41 @@
 import type { NextConfig } from 'next'
+import { PHASE_DEVELOPMENT_SERVER } from 'next/constants'
 
 /**
- * Los hosts de imagen salen de la URL de Supabase en vez de estar hardcodeados,
- * porque cambian entre local, preview y producción. Sin esto, `next/image`
- * rechaza las fotos de producto y hay que caer a `<img>` plano, perdiendo el
- * redimensionado — que importa mucho acá: las fotos las sube el dueño del local
- * desde el celular y pesan varios MB.
+ * Hosts de imagen permitidos para `next/image`.
+ *
+ * ESTA LISTA ES ESTÁTICA A PROPÓSITO, y el motivo costó un bug entero.
+ *
+ * Antes se derivaba de `process.env.NEXT_PUBLIC_SUPABASE_URL`. El problema es
+ * que **este archivo se evalúa antes de que Next cargue los `.env`**, así que
+ * esa variable era `undefined`, el `if` no entraba, `remotePatterns` quedaba
+ * VACÍO y `/_next/image` respondía `400 "url" parameter is not allowed` a TODA
+ * foto de producto. La página no rompe: se ve el ícono de imagen rota, que es
+ * el síntoma más fácil de atribuir a la foto —o al celular— antes que a la
+ * config. En un producto donde la foto ES el motor de venta, eso apagaba la
+ * premisa del diseño entero sin un solo error en la consola del servidor.
+ *
+ * `loadEnvConfig()` de `@next/env` parece la solución y no lo es: en el
+ * contexto donde Next evalúa este archivo el import no resuelve el named
+ * export (`@next/env` es CommonJS), y el resultado es el mismo silencio.
+ * Verificado contra el matcher real de Next
+ * (`next/dist/shared/lib/match-remote-pattern`): el patrón de abajo matchea la
+ * URL de una foto local, así que cuando fallaba no era el patrón — era la
+ * lista vacía.
+ *
+ * Estático significa determinístico: no depende del orden de carga de nada.
+ * Cubre los tres entornos, y el `pathname` sigue acotado a objetos PÚBLICOS de
+ * Storage, que es lo que realmente limita el alcance.
  */
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-
-const remotePatterns: NonNullable<NextConfig['images']>['remotePatterns'] = []
-
-if (supabaseUrl) {
-  const { protocol, hostname, port } = new URL(supabaseUrl)
-  remotePatterns.push({
-    protocol: protocol.replace(':', '') as 'http' | 'https',
-    hostname,
-    port: port || undefined,
-    pathname: '/storage/v1/object/public/**',
-  })
-}
+const remotePatterns: NonNullable<NextConfig['images']>['remotePatterns'] = [
+  // Proyecto hosted (producción y previews).
+  { protocol: 'https', hostname: '*.supabase.co', pathname: '/storage/v1/object/public/**' },
+  // Stack local del CLI de Supabase. Las dos formas: `supabase start` imprime
+  // `127.0.0.1`, pero un `.env` escrito a mano suele decir `localhost`, y para
+  // `next/image` son dos hosts distintos.
+  { protocol: 'http', hostname: '127.0.0.1', port: '54321', pathname: '/storage/v1/object/public/**' },
+  { protocol: 'http', hostname: 'localhost', port: '54321', pathname: '/storage/v1/object/public/**' },
+]
 
 /**
  * Headers de seguridad (S-10). Nada impedía hoy embeber /admin (un KDS con
@@ -52,6 +68,64 @@ if (supabaseUrl) {
  *  img-src 'self' https: data:; connect-src 'self' https://api.mercadopago.com;
  *  frame-ancestors 'none'; base-uri 'self'; form-action 'self'`
  */
+/**
+ * Excepción puntual a `frame-ancestors 'none'` / `X-Frame-Options: DENY` de
+ * arriba, para `/admin/apariencia` (S-15).
+ *
+ * La vista previa de marca embebe la vitrina REAL en un `<iframe>` mismo
+ * origen (`?preview=brand`, ver `src/lib/preview-mode.ts` y
+ * `views/admin/apariencia/brand-preview.tsx`) en vez de dibujar una réplica
+ * a mano. Sin esta excepción, el bloqueo global de arriba —pensado para que
+ * NADIE pueda embeber `/admin` o `/backoffice`— también le pega a
+ * `/[store]/*`, y el propio panel no puede mostrar su vitrina adentro de un
+ * iframe propio: el navegador la bloquearía en silencio, sin ningún error en
+ * la app que lo explique.
+ *
+ * Achicado a propósito en dos ejes, no solo uno:
+ *   - `has: [{ type: 'query', key: 'preview', value: 'brand' }]` — SOLO se
+ *     afloja para pedidos que ya traen el flag. Sin el query param, la
+ *     vitrina sigue exactamente tan no-frameable como hoy.
+ *   - `frame-ancestors 'self'` (no una lista abierta) — un origen ajeno
+ *     nunca puede embeberla, con o sin el flag puesto. Esto no es
+ *     clickjacking cross-origin: el `<iframe>` solo puede venir de una
+ *     página del propio dominio.
+ *
+ * Las cuatro rutas de `/[store]/*` se listan explícitas (nada de comodín
+ * `*`/grupo opcional en el patrón): son las únicas que existen hoy, y la
+ * exclusión `(?!admin$|backoffice$|api$|mis-pedidos$|pedido$)` en el segmento
+ * `:store` es la que garantiza que esto NUNCA matchee `/admin`, `/backoffice`,
+ * `/api/*`, `/mis-pedidos` ni `/pedido/*` — aunque nunca vaya a existir una
+ * tienda con esos slugs (`RESERVED_SLUGS` en `platform.schema.ts` los
+ * prohíbe), el matching de headers de Next es sobre la FORMA de la URL, no
+ * sobre qué page la termina sirviendo.
+ */
+/**
+ * OJO AL AGREGAR EL CSP COMPLETO que sugiere el comentario de arriba
+ * (`script-src`, `object-src`, `base-uri`, `form-action`…): un header de Next
+ * REEMPLAZA, no fusiona. Estas cuatro rutas emiten su propio
+ * `Content-Security-Policy`, así que en cuanto el CSP global deje de ser solo
+ * `frame-ancestors` habrá que repetir todas las directivas ACÁ ADENTRO o la
+ * vitrina se queda sin ninguna de ellas justo con `?preview=brand` puesto.
+ * Hoy no pasa nada porque el global es únicamente `frame-ancestors 'none'`
+ * —verificado con curl: la respuesta trae UN solo header CSP— pero el día que
+ * crezca, esto es el lugar donde se rompe en silencio.
+ */
+function previewFrameHeaders() {
+  const notReserved = '(?!admin$|backoffice$|api$|mis-pedidos$|pedido$)[^/]+'
+  const previewHeaders = [
+    { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+    { key: 'Content-Security-Policy', value: "frame-ancestors 'self'" },
+  ]
+  const has = [{ type: 'query' as const, key: 'preview', value: 'brand' }]
+
+  return [
+    { source: `/:store(${notReserved})`, has, headers: previewHeaders },
+    { source: `/:store(${notReserved})/carrito`, has, headers: previewHeaders },
+    { source: `/:store(${notReserved})/checkout`, has, headers: previewHeaders },
+    { source: `/:store(${notReserved})/producto/:id`, has, headers: previewHeaders },
+  ]
+}
+
 async function headers() {
   return [
     {
@@ -82,10 +156,50 @@ async function headers() {
       source: '/pedido/:token*',
       headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
     },
+    ...previewFrameHeaders(),
   ]
 }
 
+/**
+ * Orígenes que `next dev` acepta para servir `/_next/*`.
+ *
+ * Next 16 bloquea con **403** cualquier pedido a `/_next/*` que llegue con un
+ * header `Origin` que no esté en esta lista, y por defecto la lista es
+ * `localhost` a secas. Verificado a mano contra el dev server:
+ *
+ *   sin Origin                          -> 200
+ *   Origin: http://localhost:3000       -> 200
+ *   Origin: http://127.0.0.1:3000       -> 403
+ *   Origin: http://192.168.54.180:3000  -> 403
+ *
+ * El síntoma no menciona CORS en ningún lado y es brutal: los chunks que el
+ * runtime de Turbopack pide con CORS (los que mandan `Origin`) no cargan, así
+ * que **React nunca hidrata** —nada clickeable, ningún control de Radix
+ * funciona— y, como en dev el CSS se inyecta desde esos mismos chunks, las
+ * variables de `next/font` tampoco se definen y la app entera cae a Times con
+ * medio layout sin aplicar. Se ve como "el diseño está roto en mobile", no
+ * como un problema de red.
+ *
+ * Esto importa especialmente en este producto: el 90% de los pedidos entra
+ * desde un celular, así que probar desde un teléfono real por la IP de LAN no
+ * es un caso de borde, es EL caso. Sin estas entradas ese flujo es imposible.
+ *
+ * Solo afecta a `next dev`; en producción no existe.
+ */
+const allowedDevOrigins = [
+  '127.0.0.1',
+  // Rangos privados: la IP que le toca a la máquina en la red de casa o la
+  // oficina cambia sola, así que fijar una sola sería romperlo en el próximo
+  // DHCP.
+  '192.168.*.*',
+  '10.*.*.*',
+  '172.16.*.*',
+  // Bonjour: `mi-mac.local:3000` desde el celular, sin depender de la IP.
+  '*.local',
+]
+
 const nextConfig: NextConfig = {
+  allowedDevOrigins,
   images: {
     remotePatterns,
     // El catálogo se ve casi siempre en un celular; no hace falta servir 3840px.
@@ -94,4 +208,32 @@ const nextConfig: NextConfig = {
   headers,
 }
 
-export default nextConfig
+/**
+ * El config se exporta como FUNCIÓN para poder leer la fase.
+ *
+ * Motivo: `images.dangerouslyAllowLocalIP` tiene que estar prendido **solo en
+ * desarrollo**. Next 16 resuelve el hostname de toda imagen remota y rechaza
+ * las que caen en una IP privada, como guarda anti-SSRF; el error es
+ * `400 "url" parameter is not allowed`, el MISMO texto que usa para una URL
+ * que no matchea `remotePatterns`, así que se diagnostica como un problema de
+ * patrones cuando no lo es. En local el Storage de Supabase vive en
+ * `127.0.0.1:54321` (y `localhost` resuelve ahí también), o sea que sin esto
+ * NINGUNA foto de producto se ve en desarrollo.
+ *
+ * En producción queda apagado, que es como tiene que estar: ahí el Storage es
+ * un host público y permitir IPs privadas convertiría al optimizador de
+ * imágenes en un proxy para escanear la red interna del servidor.
+ *
+ * Se usa la fase y no `process.env.NODE_ENV` porque este archivo se evalúa
+ * antes de que Next cargue los `.env` (ver el comentario de `remotePatterns`):
+ * la fase la pasa el propio framework y siempre está.
+ */
+export default function config(phase: string): NextConfig {
+  if (phase === PHASE_DEVELOPMENT_SERVER) {
+    return {
+      ...nextConfig,
+      images: { ...nextConfig.images, dangerouslyAllowLocalIP: true },
+    }
+  }
+  return nextConfig
+}

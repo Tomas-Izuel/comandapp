@@ -25,10 +25,11 @@ export const storeStatusSchema = z.enum(['active', 'suspended'])
  */
 export const RESERVED_SLUGS = [
   'admin', 'api', 'app', 'assets', 'auth', 'backoffice', 'blog', 'carrito', 'checkout',
-  'dashboard', 'docs', 'favicon', 'functions', 'graphql', 'health', 'help', 'images',
-  'login', 'logout', 'manifest', 'mis-pedidos', 'new', 'nueva', 'pedido', 'pedidos',
-  'public', 'realtime', 'rest', 'robots', 'settings', 'sitemap', 'static', 'status',
-  'storage', 'support', 'www', '_next',
+  'dashboard', 'docs', 'envios', 'favicon', 'functions', 'graphql', 'health', 'help',
+  'images', 'legal', 'login', 'logout', 'manifest', 'mis-pedidos', 'new', 'nueva',
+  'pedido', 'pedidos', 'public', 'realtime', 'repartidor', 'repartidores', 'rest',
+  'robots', 'settings', 'sitemap', 'static', 'status', 'storage', 'support', 'www',
+  '_next',
 ] as const
 
 const slugSchema = z

@@ -2,13 +2,28 @@
 
 import * as React from 'react'
 import Link from 'next/link'
+import { Bike } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/views/shared/states'
+import { Panel, StatusPill } from '@/views/shared/surfaces'
 import { Price } from '@/views/shared/money'
 import { STATUS_LABEL } from '@/views/shared/order-status'
 import { getSavedOrders, type SavedOrderRef } from '@/lib/cart'
 import { formatDateTime } from '@/lib/dates'
 import type { OrderPublicView } from '@/models/types'
+import type { OrderStatus } from '@/models/schemas/order.schema'
+
+/**
+ * Tono del pill por estado: "En camino" tiene que notarse en una lista de
+ * pedidos viejos tanto como en el seguimiento — es el momento en que el
+ * cliente más vuelve a mirar esta pantalla.
+ */
+function statusTone(status: OrderStatus): 'neutral' | 'live' | 'warning' | 'danger' | 'done' {
+  if (status === 'cancelled') return 'danger'
+  if (status === 'delivered') return 'done'
+  if (status === 'on_the_way') return 'live'
+  return 'neutral'
+}
 
 /**
  * Todas las tiendas del producto operan en Argentina (ver PRODUCT.md). Esta
@@ -68,36 +83,55 @@ export function MyOrders() {
   const rows: Row[] = refs.map((ref) => ({ ref, order: orders.get(ref.token) ?? null }))
 
   return (
-    <div className="mx-auto flex w-full max-w-lg flex-1 flex-col gap-6 px-5 py-10 sm:px-8">
-      <h1 className="display text-3xl uppercase">Mis pedidos</h1>
+    <div className="mx-auto flex w-full max-w-lg flex-1 flex-col gap-4 px-4 py-8 sm:px-6">
+      <h1 className="display text-foreground text-2xl font-semibold sm:text-3xl">Mis pedidos</h1>
 
-      <div className="flex flex-col gap-px">
+      <div className="flex flex-col gap-3">
         {rows.map(({ ref, order }) => (
-          <div key={ref.token} className="border-border flex flex-col gap-2 border-t py-4">
+          <Panel key={ref.token} className="flex flex-col gap-3 p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <p className="truncate text-sm font-medium">
                   Pedido #{ref.shortCode} · {order?.storeName ?? ref.storeSlug}
                 </p>
                 <p className="text-muted-foreground text-xs">{formatDateTime(ref.createdAt, DEFAULT_TIMEZONE)}</p>
+                {/* Retiro vs. delivery, a simple vista: son dos experiencias
+                    distintas después de pagar (ir a buscarlo vs. esperar en
+                    casa) y la lista no lo distinguía. */}
+                <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                  {order?.deliveryMethod === 'delivery' ? (
+                    <>
+                      <Bike className="size-3.5 shrink-0" aria-hidden />
+                      <span className="truncate">
+                        Delivery{order.deliveryAddress ? ` a ${order.deliveryAddress.line}` : ''}
+                      </span>
+                    </>
+                  ) : order ? (
+                    <span>Retiro en el local</span>
+                  ) : null}
+                </div>
               </div>
-              <div className="flex shrink-0 flex-col items-end gap-0.5">
+              <div className="flex shrink-0 flex-col items-end gap-1">
                 {order ? <Price cents={order.totalCents} currency={order.currency} className="tabular text-sm font-medium" /> : null}
-                <p className="text-muted-foreground text-xs uppercase tracking-[0.08em]">
-                  {order ? STATUS_LABEL[order.status] : 'No disponible'}
-                </p>
+                {order ? (
+                  <StatusPill tone={statusTone(order.status)}>{STATUS_LABEL[order.status]}</StatusPill>
+                ) : (
+                  <p className="text-muted-foreground text-xs">No disponible</p>
+                )}
               </div>
             </div>
 
             <div className="flex gap-2.5">
-              <Button asChild size="sm" variant="outline" className="h-9">
-                <Link href={`/pedido/${ref.token}`}>Ver seguimiento</Link>
+              {/* h-11: piso de 44px para todo lo tocable. `size="sm"` (36px)
+                  no llega. */}
+              <Button asChild size="sm" variant="outline" className="h-11 rounded-pill">
+  <Link href={`/pedido/${ref.token}`}>Ver seguimiento</Link>
               </Button>
-              <Button asChild size="sm" variant="ghost" className="h-9">
+              <Button asChild size="sm" variant="ghost" className="h-11 rounded-pill">
                 <Link href={`/${ref.storeSlug}?reorder=${ref.token}`}>Reiterar</Link>
               </Button>
             </div>
-          </div>
+          </Panel>
         ))}
       </div>
     </div>

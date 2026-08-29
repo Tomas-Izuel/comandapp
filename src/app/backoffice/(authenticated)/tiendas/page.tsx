@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
+import { requireBackofficeSession } from '@/controllers/platform.controller'
 import { listPlatformStores } from '@/models/platform.model'
 import { StoreTable } from '@/views/backoffice/store-table'
 import { EmptyState } from '@/views/shared/states'
@@ -16,6 +17,9 @@ const FILTERS = [
 ] as const
 
 export default async function BackofficeStoresPage(props: PageProps<'/backoffice/tiendas'>) {
+  // Ver el comentario de `(authenticated)/page.tsx`: el layout no puede frenar
+  // a la page porque renderizan en paralelo.
+  await requireBackofficeSession()
   const searchParams = await props.searchParams
   const filterParam = typeof searchParams.estado === 'string' ? searchParams.estado : 'todas'
   const filter = FILTERS.some((f) => f.value === filterParam) ? filterParam : 'todas'

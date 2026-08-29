@@ -28,15 +28,24 @@ nombres en caja alta condensada y specs monoespaciadas. Un negocio que vende
 hambre había construido una ficha técnica. Nada de eso vuelve.
 STORY: El que llega con hambre ve comida antes que texto, entiende el precio y
 los minutos sin buscarlos, y llega a pagar sin aprender nada.
-FIRST VIEWPORT: Portada del local a sangre con el logo y el nombre encima; una
-fila de datos honestos debajo —abierto/cerrado, minutos, retiro o delivery—; el
-riel de categorías pegado bajo el encabezado; y ya entrando en pantalla el primer
-producto con su foto grande, su precio y su acción de agregar.
+MATERIAL: Tarjetas blancas que se levantan de la página con sombra real, todo
+en pastilla —chips, campos, botones, el dock—, y el verde de marca como campo
+sólido en lo que se toca. El radio es grande y constante (--radius 1.25rem por
+defecto): es la mitad de la identidad, junto con la foto.
+FIRST VIEWPORT: Encabezado con la marca del local; la portada como tarjeta
+redondeada con los datos honestos encima —abierto/cerrado, minutos, retiro,
+mínimo—; el buscador en pastilla; el riel de categorías con la foto de cada una;
+y ya entrando en pantalla la grilla de dos columnas con la primera foto grande,
+su precio en verde y su botón de sumar.
 SIGNATURE INTERACTION: Agregar al carrito. Es el único momento autorizado del
-producto: la hoja del producto sube, la barra de carrito entra desde el pie y
-frena, y el contador late cuando ya existía. Una sola confirmación, siempre la
-misma, en toda la cara del cliente. Sin rebote: nada elástico, el énfasis lo da
-la escala del keyframe y no un easing que sobrepasa.
+producto: la hoja del producto sube, el dock del pie pasa de círculo a pastilla
+con el total, y el contador late cuando ya existía. Una sola confirmación,
+siempre la misma, en toda la cara del cliente. Sin rebote: nada elástico, el
+énfasis lo da la escala del keyframe y no un easing que sobrepasa.
+DOCK: Al alcance del pulgar, flotando sobre la carta: el carrito relleno con el
+color del local, y los canales propios del local —WhatsApp, cómo llegar,
+Instagram, las apps por las que también vende—. Solo aparece lo que el local
+configuró; un dock con botones muertos no es una barra, es una promesa rota.
 MOTION GRAMMAR: Una sola familia de easing (--ease-out-expo) y tres duraciones
 (--dur-fast/base/slow). Todo arranca desde un estado ya visible, así que con
 prefers-reduced-motion el resultado final es idéntico y nada queda oculto. Nada
@@ -72,7 +81,23 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
           <body>), así que nunca va a heredar los tokens de la marca del local.
           Ver el reporte del slice de layout compartido.
         */}
-        <Toaster position="top-center" richColors theme="light" />
+        {/* `position="bottom-center"`, no `"top-center"`: el reporte real fue
+            "miro el botón que acabo de tocar, no arriba de todo" — el pulgar
+            y los ojos están abajo en TODO este producto. El offset despega
+            el toast del piso lo suficiente para no quedar debajo del dock
+            flotante (`--dock-h` + `--dock-gap`, doble porque el dock también
+            se separa del borde esa distancia) ni de la `.action-bar` del
+            carrito/checkout, que es más alta: `--space-8` de margen extra
+            cubre esa diferencia sin un token propio de alto de action-bar.
+            `env(safe-area-inset-bottom)` de nuevo por la barra de gestos del
+            iPhone, igual que el resto del chasis pegajoso. */}
+        <Toaster
+          position="bottom-center"
+          richColors
+          theme="light"
+          offset={{ bottom: 'calc(var(--dock-h) + var(--dock-gap) * 2 + var(--space-8) + env(safe-area-inset-bottom, 0px))' }}
+          mobileOffset={{ bottom: 'calc(var(--dock-h) + var(--dock-gap) * 2 + var(--space-8) + env(safe-area-inset-bottom, 0px))' }}
+        />
       </body>
     </html>
   )

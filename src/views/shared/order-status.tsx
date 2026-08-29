@@ -1,17 +1,27 @@
 import { cn } from '@/lib/utils'
 import { StatusPill, StepMark } from '@/views/shared/surfaces'
 import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS } from '@/models/schemas/order.schema'
-import type { OrderStatus, PaymentMethod, PaymentStatus } from '@/models/schemas/order.schema'
+import type { DeliveryMethod, OrderStatus, PaymentMethod, PaymentStatus } from '@/models/schemas/order.schema'
 
 /**
  * Cocina y dinero son dos relojes. Con pago en el local un pedido puede estar
  * listo y todavía impago, así que estos componentes NUNCA infieren uno del otro.
  */
 
-const KITCHEN_STEPS = [
+/** Retiro: exactamente el recorrido de siempre, sin el tramo de envío. */
+const PICKUP_STEPS = [
   'confirmed',
   'preparing',
   'ready',
+  'delivered',
+] as const satisfies readonly OrderStatus[]
+
+/** Delivery: un paso más — la comida sale de la cocina y viaja antes de llegar. */
+const DELIVERY_STEPS = [
+  'confirmed',
+  'preparing',
+  'ready',
+  'on_the_way',
   'delivered',
 ] as const satisfies readonly OrderStatus[]
 
@@ -33,10 +43,20 @@ export { ORDER_STATUS_LABELS as STATUS_LABEL }
  */
 export function OrderSteps({
   status,
+  deliveryMethod,
+  courierFirstName,
   timestamps,
   className,
 }: {
   status: OrderStatus
+  deliveryMethod: DeliveryMethod
+  /**
+   * Solo importa mientras `status === 'on_the_way'`: ahí reemplaza el rótulo
+   * genérico del paso por algo humano. Fuera de ese estado no se usa —una vez
+   * entregado, el paso vuelve a leerse como historial ("En camino"), no como
+   * "Fulano está llevando tu pedido" de algo que ya pasó.
+   */
+  courierFirstName?: string | null
   timestamps?: Partial<Record<OrderStatus, string>>
   className?: string
 }) {
@@ -48,14 +68,29 @@ export function OrderSteps({
     )
   }
 
-  const currentIndex = KITCHEN_STEPS.findIndex((step) => step === status)
+  const steps = deliveryMethod === 'delivery' ? DELIVERY_STEPS : PICKUP_STEPS
+  const currentIndex = steps.findIndex((step) => step === status)
+
+  /**
+   * Con delivery, "Listo" ambiguo: para el cliente lee como "andá a
+   * buscarlo", pero acá significa "salió de la cocina, todavía tiene que
+   * viajar". Se corrige solo en esta variante — en retiro "Listo" es
+   * exactamente correcto y no se toca.
+   */
+  function labelFor(step: OrderStatus): string {
+    if (step === 'on_the_way' && status === 'on_the_way') {
+      return courierFirstName ? `${courierFirstName} está llevando tu pedido` : 'Tu pedido está en camino'
+    }
+    if (deliveryMethod === 'delivery' && step === 'ready') return 'Listo para salir'
+    return ORDER_STATUS_LABELS[step]
+  }
 
   return (
     <div className={className}>
       <ol className="flex flex-col" aria-label="Estado del pedido">
-        {KITCHEN_STEPS.map((step, index) => {
+        {steps.map((step, index) => {
           const state = currentIndex > index ? 'done' : currentIndex === index ? 'current' : 'todo'
-          const isLast = index === KITCHEN_STEPS.length - 1
+          const isLast = index === steps.length - 1
           return (
             <li key={step} className="flex gap-3">
               <div className="flex flex-col items-center">
@@ -66,7 +101,7 @@ export function OrderSteps({
                 {!isLast ? (
                   <span
                     className={cn(
-                      'w-0.5 flex-1 rounded-full',
+                      'w-0.5 flex-1 rounded-pill',
                       currentIndex > index ? 'bg-primary' : 'bg-border',
                     )}
                     aria-hidden
@@ -82,7 +117,7 @@ export function OrderSteps({
                     state === 'todo' && 'text-muted-foreground',
                   )}
                 >
-                  {ORDER_STATUS_LABELS[step]}
+                  {labelFor(step)}
                 </span>
                 {timestamps?.[step] ? (
                   <span className="tabular text-muted-foreground shrink-0 text-xs">{timestamps[step]}</span>
@@ -93,7 +128,7 @@ export function OrderSteps({
         })}
       </ol>
       <p className="sr-only" aria-live="polite">
-        {ORDER_STATUS_LABELS[status]}
+        {labelFor(status)}
       </p>
     </div>
   )

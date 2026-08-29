@@ -17,6 +17,7 @@ export const ORDER_STATUSES = [
   'confirmed',
   'preparing',
   'ready',
+  'on_the_way',
   'delivered',
   'cancelled',
 ] as const
@@ -25,9 +26,14 @@ export const orderStatusSchema = z.enum(ORDER_STATUSES)
 export type OrderStatus = z.infer<typeof orderStatusSchema>
 
 /** Estados que la cocina ve como "trabajo pendiente". */
-export const ACTIVE_STATUSES = ['confirmed', 'preparing', 'ready'] as const satisfies readonly OrderStatus[]
+export const ACTIVE_STATUSES = ['confirmed', 'preparing', 'ready', 'on_the_way'] as const satisfies readonly OrderStatus[]
 
-/** Los que cuentan para el multiplicador de demanda: lo que está en la plancha. */
+/**
+ * Los que cuentan para el multiplicador de demanda: lo que está en la plancha.
+ *
+ * `on_the_way` NO entra: ya salió de la cocina, así que no debería hacer que el
+ * próximo pedido diga que va a tardar más.
+ */
 export const COOKING_STATUSES = ['confirmed', 'preparing'] as const satisfies readonly OrderStatus[]
 
 /** De aca no se sale: la UI no ofrece acciones y el trigger de Postgres las rechaza. */
@@ -48,6 +54,7 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   confirmed: 'Confirmado',
   preparing: 'En preparación',
   ready: 'Listo',
+  on_the_way: 'En camino',
   delivered: 'Entregado',
   cancelled: 'Cancelado',
 }
@@ -94,6 +101,10 @@ export function isUniqueViolationOn(err: { code?: string; message?: string } | n
 
 export const paymentMethodSchema = z.enum(['online', 'in_store'])
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>
+
+/** Cómo recibe el pedido el cliente. `pickup` es el default histórico. */
+export const deliveryMethodSchema = z.enum(['pickup', 'delivery'])
+export type DeliveryMethod = z.infer<typeof deliveryMethodSchema>
 
 
 /**
@@ -163,6 +174,20 @@ export const cartItemSchema = z
 
 export type CartItem = z.infer<typeof cartItemSchema>
 
+/**
+ * Texto opcional que trata el string vacío como ausente.
+ *
+ * Un input que el cliente tocó y dejó en blanco no puede fallar la validación
+ * ni guardarse como `''`: en la base, "no puso piso" es `null`.
+ */
+const optionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .optional()
+    .transform((v) => (v === '' ? undefined : v))
+
 export const createOrderSchema = z
   .object({
     storeSlug: z.string().trim().min(1).max(60),
@@ -194,10 +219,37 @@ export const createOrderSchema = z
       .transform((v) => (v === '' ? undefined : v))
       .pipe(z.email('Revisá el email').optional()),
     notes: z.string().trim().max(400).optional(),
+
+    /**
+     * Cómo lo recibe. El cliente elige el MÉTODO; el costo del envío lo calcula
+     * el servidor contra la config de la tienda y no viaja nunca en esta
+     * request — mismo principio que los precios de los ítems.
+     *
+     * Los cuatro campos de dirección van PLANOS, no anidados en un objeto, y es
+     * deliberado: `zodToApiError` devuelve el último segmento del path como
+     * `field`, y el checkout mapea ese `field` contra sus refs para enfocar el
+     * input con error. Un objeto anidado produciría `field: 'line'` para un
+     * input llamado `deliveryAddressLine`, y el foco se perdería en silencio.
+     */
+    deliveryMethod: deliveryMethodSchema.default('pickup'),
+    deliveryAddressLine: optionalText(160),
+    deliveryAddressUnit: optionalText(60),
+    deliveryAddressBetween: optionalText(160),
+    deliveryAddressNotes: optionalText(300),
   })
   // Mismo motivo: un cliente que mande `totalCents` tiene que fallar ruidoso,
   // no ser corregido en silencio.
   .strict()
+  .superRefine((v, ctx) => {
+    if (v.deliveryMethod !== 'delivery') return
+    if (!v.deliveryAddressLine || v.deliveryAddressLine.length < 4) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['deliveryAddressLine'],
+        message: 'Escribí la calle y el número para el envío',
+      })
+    }
+  })
 
 export type CreateOrderInput = z.infer<typeof createOrderSchema>
 
@@ -225,15 +277,24 @@ export const orderLookupSchema = z.object({
  * en hora pico, un pedido entregado vuelve a la cola.
  *
  * Se permite un paso atrás dentro de la cocina (`preparing → confirmed`,
- * `ready → preparing`) porque un toque equivocado en una cocina llena está
- * garantizado, y obligar a rehacer el pedido es peor que dejar corregir.
+ * `ready → preparing`, `on_the_way → ready`) porque un toque equivocado en una
+ * cocina llena —o arriba de una moto— está garantizado, y obligar a rehacer el
+ * pedido es peor que dejar corregir.
  * `delivered` y `cancelled` son terminales: de ahí no se sale.
+ *
+ * `ready → delivered` se mantiene: es el camino de todo pedido de retiro, y el
+ * de un delivery que el cliente termina pasando a buscar.
  */
 export const ALLOWED_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   pending: ['confirmed', 'cancelled'],
   confirmed: ['preparing', 'cancelled'],
   preparing: ['ready', 'confirmed', 'cancelled'],
-  ready: ['delivered', 'preparing', 'cancelled'],
+  // `delivered` va PRIMERO y eso no es cosmético: el KDS elige el botón
+  // primario con un `.find()` sobre este array, y un pedido de RETIRO no puede
+  // ofrecer "Salió a repartir". Ver el cálculo explícito de `forwardTarget` en
+  // `kds/order-card.tsx`, que además exige repartidor asignado.
+  ready: ['delivered', 'on_the_way', 'preparing', 'cancelled'],
+  on_the_way: ['delivered', 'ready', 'cancelled'],
   delivered: [],
   cancelled: [],
 }

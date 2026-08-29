@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
+import { requireBackofficeSession } from '@/controllers/platform.controller'
 import { listAudit } from '@/models/platform.model'
 import { AuditTable } from '@/views/backoffice/audit-table'
 import { EmptyState } from '@/views/shared/states'
@@ -11,6 +12,9 @@ export const metadata: Metadata = { title: 'Auditoría — Backoffice' }
 const PAGE_SIZE = 50
 
 export default async function BackofficeAuditPage(props: PageProps<'/backoffice/auditoria'>) {
+  // Ver el comentario de `(authenticated)/page.tsx`: el layout no puede frenar
+  // a la page porque renderizan en paralelo.
+  await requireBackofficeSession()
   const searchParams = await props.searchParams
   const rawLimit = typeof searchParams.limit === 'string' ? Number(searchParams.limit) : PAGE_SIZE
   const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : PAGE_SIZE

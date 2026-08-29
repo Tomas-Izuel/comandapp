@@ -35,6 +35,11 @@ export default async function AdminKitchenPage() {
       timezone={session.store.timezone}
       initialOrders={orders}
       onboarding={onboarding}
+      autoStartOrders={session.store.autoStartOrders}
+      autoReadyOrders={session.store.autoReadyOrders}
+      // Decide si el tablero dibuja la columna "En camino". Una columna siempre
+      // vacía se come un cuarto de la pantalla del que cocina.
+      deliveryEnabled={session.store.delivery.enabled}
     />
   )
 }

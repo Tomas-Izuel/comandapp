@@ -1,0 +1,34 @@
+-- `courier_collects_payment` sale del grant de `authenticated`
+--
+-- PASO 3 DE LA CASCADA (20260826120000_hardening.sql §13, 20260828130000_delivery.sql §1).
+--
+-- "El repartidor cobra en la puerta" entro en el grant por columna junto al
+-- resto de los campos de reparto, y visto como logistica tenia sentido. No lo
+-- es: decide si la comida sale a la calle con la plata ya asegurada o si el
+-- cobro queda en manos de una persona en la vereda. Es la caja, no el reparto.
+--
+-- Desde ahora ese cambio pasa por un codigo de 6 digitos que se manda al mail
+-- del dueno registrado en `auth.users`
+-- (`requestCourierPaymentPolicyChangeAction` + `confirmPendingChangeAction`).
+-- Pero mientras la columna siguiera en el grant, eso era decoracion: el grant
+-- es lo que decide QUE COLUMNAS puede escribir el browser del staff, y una
+-- policy `for update` no distingue columnas.
+--
+-- VERIFICADO A MANO antes de escribir esto, con el rol `authenticated` y el JWT
+-- de un miembro del local -- o sea, exactamente lo que viaja en el browser con
+-- la publishable key:
+--
+--   set local role authenticated;
+--   set local request.jwt.claims = '{"sub":"<staff>","role":"authenticated","aal":"aal1"}';
+--   update public.stores set courier_collects_payment = not courier_collects_payment where id = 1;
+--   -- UPDATE 1   <-- salteaba el chequeo de `owner` Y el codigo de confirmacion
+--
+-- Es el mismo patron que ya documenta CLAUDE.md para `status`/`slug` en
+-- `stores` y para las columnas de dinero en `orders`: las reglas existian, pero
+-- en TypeScript.
+--
+-- Consecuencia practica: la escritura queda solo para `service_role`, detras de
+-- `requireStoreMembership(id, { role: 'owner' })` mas el codigo. Si algun dia
+-- esto devuelve `permission denied` desde el cliente RLS, la pregunta no es
+-- "que grant falta" sino "esto lo tendria que poder hacer el browser del staff".
+revoke update (courier_collects_payment) on public.stores from authenticated;

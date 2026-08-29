@@ -3,6 +3,7 @@ import { resolveAdminSession } from '@/controllers/admin.controller'
 import { getOrderHistory } from '@/models/order.model'
 import { DateFilter } from '@/views/admin/pedidos/date-filter'
 import { OrderHistoryList } from '@/views/admin/pedidos/history-list'
+import { PageFrame } from '@/views/admin/page-frame'
 import { isCalendarDay, todayInZone, zonedDayRange } from '@/lib/dates'
 
 const HISTORY_DEFAULT_DAYS = 7
@@ -41,12 +42,10 @@ export default async function AdminOrderHistoryPage(props: PageProps<'/admin/ped
   const orders = await getOrderHistory(session.store.id, { from: fromIso, to: toIso, limit: 200 })
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Pedidos</h1>
-        <DateFilter from={from} to={to} />
-      </div>
+    // `table`: es un historial denso de hasta 200 filas, no un formulario ni el
+    // tablero de cocina — 90rem le da lugar a la tabla sin estirarla a 1920px.
+    <PageFrame title="Pedidos" width="table" action={<DateFilter from={from} to={to} />}>
       <OrderHistoryList orders={orders} timezone={timezone} />
-    </div>
+    </PageFrame>
   )
 }

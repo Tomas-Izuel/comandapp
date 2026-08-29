@@ -1,12 +1,20 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
+import { requireBackofficeSession } from '@/controllers/platform.controller'
 import { Panel } from '@/views/shared/surfaces'
 import { StoreCreateForm } from '@/views/backoffice/store-create-form'
 
 export const metadata: Metadata = { title: 'Nueva tienda — Backoffice' }
 
-export default function BackofficeNewStorePage() {
+export default async function BackofficeNewStorePage() {
+  // Esta page no lee nada, así que no tira — pero sin el guard un usuario en
+  // `aal1` alcanza a renderizar el formulario de alta antes de que el redirect
+  // del layout gane la carrera. El alta en sí ya está protegida en el server
+  // action; esto es para que las cinco pages del backoffice se guarden igual y
+  // no haya que recordar cuál era la excepción.
+  await requireBackofficeSession()
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">

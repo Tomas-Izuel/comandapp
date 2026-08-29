@@ -24,19 +24,24 @@ export default function AdminError({
   }, [error])
 
   return (
-    <EmptyState
-      title="Algo falló en el panel"
-      description={
-        error.digest
-          ? `Reintentá en un momento. Si sigue pasando, pasá este código: ${error.digest}`
-          : 'Reintentá en un momento. Si sigue pasando, avisale a soporte.'
-      }
-      action={
-        <Button size="lg" onClick={retry}>
-          <RotateCw />
-          Reintentar
-        </Button>
-      }
-    />
+    // `<main>` del chasis no pone padding ni ancho (eso es de `PageFrame`), así
+    // que un estado que reemplaza a `{children}` tiene que traer su propia
+    // geometría — si no, el mensaje queda pegado al borde del viewport.
+    <div className="mx-auto flex min-h-[70dvh] w-full max-w-(--admin-max-form) items-center justify-center px-(--admin-gutter) py-10 lg:px-(--admin-gutter-lg)">
+      <EmptyState
+        title="Algo falló en el panel"
+        description={
+          error.digest
+            ? `Reintentá en un momento. Si sigue pasando, pasá este código: ${error.digest}`
+            : 'Reintentá en un momento. Si sigue pasando, avisale a soporte.'
+        }
+        action={
+          <Button size="lg" onClick={retry}>
+            <RotateCw />
+            Reintentar
+          </Button>
+        }
+      />
+    </div>
   )
 }

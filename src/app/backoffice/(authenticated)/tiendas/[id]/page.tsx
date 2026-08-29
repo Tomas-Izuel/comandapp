@@ -2,16 +2,29 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
+import { requireBackofficeSession } from '@/controllers/platform.controller'
 import { getPlatformStoreById } from '@/models/platform.model'
 import { StoreDetail } from '@/views/backoffice/store-detail'
 
 export async function generateMetadata(props: PageProps<'/backoffice/tiendas/[id]'>): Promise<Metadata> {
   const { id } = await props.params
-  const store = await getPlatformStoreById(Number(id))
-  return { title: store ? `${store.name} — Backoffice` : 'Tienda — Backoffice' }
+
+  // `generateMetadata` NO es una superficie de autorización: quien decide si
+  // esta ruta se puede ver es la page, más abajo. Acá el try/catch existe
+  // porque esta función también corre en paralelo al layout, y con una sesión
+  // sin `aal2` el modelo tira — un título genérico es la respuesta correcta a
+  // eso, no una excepción que tape el redirect.
+  try {
+    const store = await getPlatformStoreById(Number(id))
+    return { title: store ? `${store.name} — Backoffice` : 'Tienda — Backoffice' }
+  } catch {
+    return { title: 'Tienda — Backoffice' }
+  }
 }
 
 export default async function BackofficeStoreDetailPage(props: PageProps<'/backoffice/tiendas/[id]'>) {
+  await requireBackofficeSession()
+
   const { id } = await props.params
   const storeId = Number(id)
   if (!Number.isInteger(storeId)) notFound()

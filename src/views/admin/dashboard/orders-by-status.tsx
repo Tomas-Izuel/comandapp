@@ -12,11 +12,14 @@ export function OrdersByStatusBreakdown({ counts }: { counts: Record<OrderStatus
   return (
     <ul className="flex flex-col gap-2.5">
       {ORDER_STATUSES.filter((status) => counts[status] > 0).map((status) => (
-        <li key={status} className="grid grid-cols-[8rem_1fr_2rem] items-center gap-3 text-sm">
+        <li
+          key={status}
+          className="grid grid-cols-[8rem_1fr_2rem] items-center gap-3 text-sm lg:grid-cols-[9rem_1fr_2.5rem] lg:text-base"
+        >
           <span className="text-muted-foreground truncate">{STATUS_LABEL[status]}</span>
-          <div className="bg-muted h-2 w-full rounded-full">
+          <div className="bg-muted h-2 w-full rounded-pill lg:h-2.5">
             <div
-              className="bg-foreground/70 h-2 rounded-full"
+              className="bg-foreground/70 h-2 rounded-pill lg:h-2.5"
               style={{ width: `${Math.max(3, (counts[status] / max) * 100)}%` }}
             />
           </div>

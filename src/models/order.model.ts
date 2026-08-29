@@ -2,10 +2,12 @@ import 'server-only'
 
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { deliveryFeeFor, deliveryMinutesFor } from '@/lib/delivery'
 import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
 import { formatCentsCompact, scaleUpInt, sumCents } from '@/lib/money'
 import { productImageUrl } from '@/lib/storage'
+import { getCourierAvailability } from '@/models/courier.model'
 import { toStore, type StoreRow } from '@/models/mappers/store.mapper'
 import {
   ACTIVE_STATUSES,
@@ -29,8 +31,10 @@ import {
   type PaymentStatus,
 } from '@/models/schemas/order.schema'
 import type {
+  DeliveryMethod,
   EtaEstimate,
   Order,
+  OrderDeliveryAddress,
   OrderItem,
   OrderItemOption,
   OrderPublicView,
@@ -51,8 +55,15 @@ type OrderItemRow = Database['public']['Tables']['order_items']['Row']
 type OrderItemOptionRow = Database['public']['Tables']['order_item_options']['Row']
 
 type OrderItemWithOptions = OrderItemRow & { order_item_options: OrderItemOptionRow[] }
-type OrderWithItems = OrderRow & { order_items: OrderItemWithOptions[] }
-type OrderWithItemsAndStore = OrderWithItems & { stores: StoreRow | null }
+/** Alias del embed a `store_members` vía `courier_id`. Opcional: no todos los selects lo piden. */
+type CourierEmbed = { display_name: string } | null
+type OrderWithItems = OrderRow & { order_items: OrderItemWithOptions[]; courier?: CourierEmbed }
+type OrderWithItemsAndStore = OrderWithItems & {
+  stores: StoreRow | null
+  // Alias del embed a `store_members` vía `courier_id`. Solo se pide donde hace
+  // falta (seguimiento público) para no ensanchar el select de todos lados.
+  courier: { display_name: string } | null
+}
 
 type ProductForPricing = {
   id: number
@@ -98,7 +109,7 @@ function toOrderItem(row: OrderItemWithOptions): OrderItem {
   }
 }
 
-function toOrder(row: OrderRow, items: OrderItem[]): Order {
+function toOrder(row: OrderRow & { courier?: CourierEmbed }, items: OrderItem[]): Order {
   return {
     id: row.id,
     storeId: row.store_id,
@@ -133,6 +144,39 @@ function toOrder(row: OrderRow, items: OrderItem[]): Order {
     refundedAt: row.refunded_at,
     createdAt: row.created_at,
     items,
+
+    deliveryMethod: row.delivery_method as DeliveryMethod,
+    deliveryFeeCents: row.delivery_fee_cents,
+    deliveryAddress: toDeliveryAddress(row),
+    deliveryMinutes: row.delivery_minutes,
+    courierId: row.courier_id,
+    // Sale del embed, no de una columna de `orders`. Un select que no lo pida
+    // deja esto en null, que es correcto: significa "no lo sé", no "no tiene".
+    courierName: row.courier?.display_name ?? null,
+    assignedAt: row.assigned_at,
+    onTheWayAt: row.on_the_way_at,
+  }
+}
+
+/**
+ * Las cuatro columnas de dirección se colapsan en un objeto o en `null`.
+ *
+ * Un CHECK garantiza que un pedido `delivery` siempre tiene `line`, así que el
+ * null acá significa exactamente "es un retiro" y no "le falta un dato".
+ */
+function toDeliveryAddress(row: {
+  delivery_method: string
+  delivery_address_line: string | null
+  delivery_address_unit: string | null
+  delivery_address_between: string | null
+  delivery_address_notes: string | null
+}): OrderDeliveryAddress | null {
+  if (row.delivery_method !== 'delivery' || !row.delivery_address_line) return null
+  return {
+    line: row.delivery_address_line,
+    unit: row.delivery_address_unit,
+    between: row.delivery_address_between,
+    notes: row.delivery_address_notes,
   }
 }
 
@@ -140,6 +184,13 @@ function toOrderPublicView(row: OrderWithItemsAndStore): OrderPublicView {
   const status = row.status as OrderStatus
   const paymentMethod = row.payment_method as PaymentMethod
   const paymentStatus = row.payment_status as PaymentStatus
+
+  // Solo el nombre de pila, y solo mientras el pedido está EN LA CALLE: esta
+  // vista la ve cualquiera con el token, y el dato es de un empleado. Antes o
+  // después de `on_the_way` (asignado pero todavía en el local, o ya
+  // entregado) no aporta nada y sí expone de más.
+  const courierFirstName =
+    status === 'on_the_way' && row.courier?.display_name ? row.courier.display_name.split(' ')[0] : null
 
   return {
     shortCode: row.short_code,
@@ -157,6 +208,10 @@ function toOrderPublicView(row: OrderWithItemsAndStore): OrderPublicView {
     readyAt: row.ready_at,
     createdAt: row.created_at,
     items: (row.order_items ?? []).map(toOrderItem),
+    deliveryMethod: row.delivery_method as DeliveryMethod,
+    deliveryFeeCents: row.delivery_fee_cents,
+    deliveryAddress: toDeliveryAddress(row),
+    courierFirstName,
     storeName: row.stores?.name ?? '',
     storeSlug: row.stores?.slug ?? '',
     // La URL de pago no viaja acá (se pide con `resumePaymentAction`): esto es
@@ -165,8 +220,20 @@ function toOrderPublicView(row: OrderWithItemsAndStore): OrderPublicView {
   }
 }
 
-const ORDER_WITH_ITEMS_SELECT = '*, order_items ( *, order_item_options (*) )'
-const ORDER_WITH_ITEMS_AND_STORE_SELECT = '*, stores ( * ), order_items ( *, order_item_options (*) )'
+// El embed del repartidor va también acá, no solo en el select con `stores`:
+// de este sale `getActiveOrders`, que es lo ÚNICO que alimenta el tablero de
+// cocina (carga inicial, poll de 30s y refetch de Realtime). Sin él, el chip
+// con el nombre del repartidor solo vivía en el parche optimista del cliente y
+// el primer refetch lo borraba — el encargado tenía que abrir el selector de
+// cada tarjeta para saber quién lleva qué.
+const ORDER_WITH_ITEMS_SELECT =
+  '*, courier:store_members!orders_courier_id_fkey ( display_name ), order_items ( *, order_item_options (*) )'
+// `courier:store_members!orders_courier_id_fkey` es un embed aparte del de
+// `stores`: hay una sola FK de `orders` a `store_members` (courier_id), así
+// que el hint del constraint alcanza y no hace ambiguo el embed de `stores`
+// del que dependen el seguimiento público y el webhook de Mercado Pago.
+const ORDER_WITH_ITEMS_AND_STORE_SELECT =
+  '*, stores ( * ), courier:store_members!orders_courier_id_fkey ( display_name ), order_items ( *, order_item_options (*) )'
 
 /** Lectura completa de un pedido por id, para devolver en los outcomes de pago. */
 async function fetchFullOrder(orderId: number): Promise<Order | null> {
@@ -307,7 +374,7 @@ export async function priceCart(store: Store, items: CartItem[]): Promise<Priced
 //    columnas de la tienda que el caller ya tiene.
 // ---------------------------------------------------------------------------
 
-export async function estimateEta(store: Store, baseMinutes: number): Promise<EtaEstimate> {
+export async function estimateEta(store: Store, baseMinutes: number, deliveryMinutes = 0): Promise<EtaEstimate> {
   const admin = createAdminClient()
 
   const { count, error } = await admin
@@ -325,12 +392,16 @@ export async function estimateEta(store: Store, baseMinutes: number): Promise<Et
   const isBusy = activeOrders >= store.demandThresholdOrders
   const multiplier = isBusy ? store.demandMultiplier : 1
 
+  // scaleUpInt opera en puntos base enteros: Math.ceil(20 * 1.1) daba 23 por
+  // el float 22.000000000000004. El viaje se SUMA después de multiplicar, no
+  // se multiplica: el multiplicador de demanda es de la cocina, no de la moto.
+  const cookMinutes = scaleUpInt(baseMinutes, multiplier)
+
   return {
     baseMinutes,
     multiplier,
-    // scaleUpInt opera en puntos base enteros: Math.ceil(20 * 1.1) daba 23 por
-    // el float 22.000000000000004.
-    etaMinutes: scaleUpInt(baseMinutes, multiplier),
+    deliveryMinutes,
+    etaMinutes: cookMinutes + deliveryMinutes,
     activeOrders,
     isBusy,
   }
@@ -383,15 +454,43 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
 
   const priced = await priceCart(store, parsed.items)
 
+  // El mínimo general se evalúa sobre el SUBTOTAL, no sobre el total con
+  // envío: un mínimo que se alcanza cobrando el delivery no es un mínimo.
   if (priced.subtotalCents < store.minOrderCents) {
     throw new DomainError(`El pedido mínimo es de ${formatCentsCompact(store.minOrderCents, store.currency)}`)
   }
 
-  const eta = await estimateEta(store, priced.basePrepMinutes)
+  // El envío se recalcula desde cero, igual que los ítems: el browser manda
+  // el MÉTODO y la dirección, nunca el monto del envío.
+  const isDelivery = parsed.deliveryMethod === 'delivery'
+  let deliveryFeeCents = 0
+  let deliveryMinutes: number | null = null
+
+  if (isDelivery) {
+    if (!store.delivery.enabled) throw new DomainError('Este local no hace envíos a domicilio')
+
+    if (priced.subtotalCents < store.delivery.minOrderCents) {
+      const missingCents = store.delivery.minOrderCents - priced.subtotalCents
+      throw new DomainError(
+        `Para pedir con envío el mínimo es ${formatCentsCompact(store.delivery.minOrderCents, store.currency)}. Te faltan ${formatCentsCompact(missingCents, store.currency)}.`,
+      )
+    }
+
+    deliveryFeeCents = deliveryFeeFor(store.delivery, priced.subtotalCents)
+    const availability = await getCourierAvailability(store.id)
+    deliveryMinutes = deliveryMinutesFor(store.delivery, availability.freeCouriers)
+  }
+
+  const eta = await estimateEta(store, priced.basePrepMinutes, deliveryMinutes ?? 0)
 
   const isOnline = parsed.paymentMethod === 'online'
   const initialStatus: OrderStatus = isOnline ? 'pending' : 'confirmed'
   const etaAt = new Date(Date.now() + eta.etaMinutes * 60_000).toISOString()
+
+  // `orders_total_is_subtotal_plus_delivery_check` es la red de seguridad: si
+  // acá se rompe la suma, el insert rebota con 23514 en vez de guardar un
+  // envío regalado en silencio.
+  const totalCents = priced.subtotalCents + deliveryFeeCents
 
   const p_order = {
     store_id: store.id,
@@ -403,13 +502,22 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
     notes: parsed.notes ?? null,
     currency: store.currency,
     subtotal_cents: priced.subtotalCents,
-    total_cents: priced.totalCents,
+    total_cents: totalCents,
     base_prep_minutes: priced.basePrepMinutes,
     demand_multiplier: eta.multiplier,
     eta_minutes: eta.etaMinutes,
     eta_at: etaAt,
     payment_method: parsed.paymentMethod,
     payment_status: 'pending',
+    delivery_method: parsed.deliveryMethod,
+    delivery_fee_cents: deliveryFeeCents,
+    delivery_minutes: deliveryMinutes,
+    // Solo se guarda la dirección cuando es delivery: para un retiro no hay
+    // ningún dato del cliente que valga la pena persistir acá.
+    delivery_address_line: isDelivery ? (parsed.deliveryAddressLine ?? null) : null,
+    delivery_address_unit: isDelivery ? (parsed.deliveryAddressUnit ?? null) : null,
+    delivery_address_between: isDelivery ? (parsed.deliveryAddressBetween ?? null) : null,
+    delivery_address_notes: isDelivery ? (parsed.deliveryAddressNotes ?? null) : null,
   }
 
   const p_items = priced.items.map((item) => ({
@@ -912,8 +1020,84 @@ export async function markOrderPaid(p: {
     return { outcome: 'needs_refund', order: refreshed ?? order, reason }
   }
 
+  // El componente de viaje del ETA depende de si hay motos libres EN ESTE
+  // MOMENTO, y entre crear el pedido y que el pago se confirme puede pasar
+  // media hora. Log-y-seguir: `refreshFrozenEta` no tira, y aunque tirara, un
+  // fallo acá no puede tumbar la confirmación de un pago que ya se aplicó.
+  await refreshFrozenEta(p.orderId).catch((err) => {
+    log.error(CTX, 'no se pudo recalcular el ETA tras aprobar el pago', err, fields)
+  })
+
   const row = updated as unknown as OrderWithItems
   return { outcome: 'applied', order: toOrder(row, row.order_items.map(toOrderItem)) }
+}
+
+/**
+ * Recalcula el ETA congelado de un pedido ya `confirmed`.
+ *
+ * Se llama SOLO desde el camino feliz de `markOrderPaid`: nunca sobre un
+ * pedido `mismatch` o `needs_refund`, eso recalcularía el ETA de un pedido
+ * que no va a cocina. Con delivery importa el doble, porque el viaje depende
+ * de la disponibilidad de repartidores en el instante en que se aprueba el
+ * pago, no en el que se creó el pedido.
+ *
+ * Nunca tira: cualquier fallo se loguea y se descarta, para no arriesgar la
+ * confirmación de un pago ya aplicado por un problema de recálculo.
+ */
+export async function refreshFrozenEta(orderId: number): Promise<void> {
+  const admin = createAdminClient()
+
+  const { data: orderRow, error: orderError } = await admin
+    .from('orders')
+    .select('store_id, base_prep_minutes, delivery_method')
+    .eq('id', orderId)
+    .maybeSingle()
+
+  if (orderError || !orderRow || orderRow.base_prep_minutes == null) {
+    log.error(CTX, 'no se pudo releer el pedido para recalcular el ETA', orderError ?? undefined, { orderId })
+    return
+  }
+
+  const { data: storeRow, error: storeError } = await admin
+    .from('stores')
+    .select('*')
+    .eq('id', orderRow.store_id)
+    .maybeSingle()
+
+  if (storeError || !storeRow) {
+    log.error(CTX, 'no se pudo releer la tienda para recalcular el ETA', storeError ?? undefined, { orderId })
+    return
+  }
+
+  const store = toStore(storeRow)
+  const isDelivery = orderRow.delivery_method === 'delivery'
+  let deliveryMinutes = 0
+
+  if (isDelivery) {
+    const availability = await getCourierAvailability(store.id)
+    deliveryMinutes = deliveryMinutesFor(store.delivery, availability.freeCouriers)
+  }
+
+  const eta = await estimateEta(store, orderRow.base_prep_minutes, deliveryMinutes)
+  const etaAt = new Date(Date.now() + eta.etaMinutes * 60_000).toISOString()
+
+  const { error: updateError } = await admin
+    .from('orders')
+    .update({
+      demand_multiplier: eta.multiplier,
+      delivery_minutes: isDelivery ? deliveryMinutes : null,
+      eta_minutes: eta.etaMinutes,
+      eta_at: etaAt,
+    })
+    .eq('id', orderId)
+    // Entre la lectura de arriba y esta escritura la cocina pudo cancelar el
+    // pedido. Recalcularle el ETA a un pedido cancelado no rompe nada, pero
+    // deja una fila que dice que algo llega en 45 minutos y no va a llegar.
+    .not('status', 'in', '("delivered","cancelled")')
+
+  if (updateError) {
+    log.error(CTX, 'no se pudo escribir el ETA recalculado', updateError, { orderId })
+  }
 }
 
 export type MarkPaidOutcome =

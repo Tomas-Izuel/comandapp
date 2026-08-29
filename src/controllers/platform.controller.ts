@@ -1,8 +1,8 @@
 import 'server-only'
 
 import { redirect } from 'next/navigation'
-import { createClient, getCurrentUser } from '@/lib/supabase/server'
-import { requirePlatformAdmin } from '@/models/platform.model'
+import { getCurrentUser } from '@/lib/supabase/server'
+import { BackofficeSessionExpiredError, requirePlatformAdmin } from '@/models/platform.model'
 import type { ActionResult } from '@/models/types'
 
 /**
@@ -33,28 +33,41 @@ export type BackofficeIdentity = { email: string }
  * Guardia de las rutas autenticadas del backoffice (todo menos /login y /mfa).
  *
  * Si `requirePlatformAdmin` falla no hay forma de saber con certeza el motivo:
- * leer `platform_admins` YA exige `aal2` en las RLS, así que "no sos admin" y
- * "sos admin pero todavía estás en aal1" se ven exactamente igual (0 filas).
- * `mfa.listFactors()` sí se puede leer en aal1 porque es sobre el usuario
- * autenticado, no una lectura de tabla — es la única señal disponible para
- * distinguir "hay que enrolar" de "hay que loguearse de nuevo".
+ * leer `platform_admins` YA exige `aal2` en las RLS, así que "no sos admin",
+ * "sos admin pero te falta enrolar TOTP" y "sos admin pero tu sesión quedó en
+ * aal1" se ven exactamente igual (0 filas). Antes esta función necesitaba
+ * distinguirlas para elegir entre `/backoffice/login` y `/backoffice/mfa`
+ * porque el login por contraseña era el único lugar que sabía pedir el
+ * código. Ya no hace falta: `/backoffice/mfa` cubre las dos mitades del
+ * segundo factor (enrolar y desafiar) y decide sola, mirando sus propios
+ * factores, cuál de las dos le toca mostrar. Sin sesión no hay nada que
+ * enrolar ni desafiar, así que esa rama sigue yendo a login.
+ *
+ * La ÚNICA excepción es la sesión vencida por las 12 horas: ese caso sí se
+ * puede diagnosticar con certeza y no se arregla en `/backoffice/mfa`. La
+ * sesión sigue siendo `aal2` para Supabase, así que volver a pasar el TOTP no
+ * emite un `amr` nuevo y la pantalla rebotaría para siempre contra la misma
+ * guardia. Lo que la renueva es un login nuevo.
  */
 export async function requireBackofficeSession(): Promise<BackofficeIdentity> {
+  let expired = false
+
   try {
     const { email } = await requirePlatformAdmin()
     return { email }
-  } catch {
-    const user = await getCurrentUser()
-    if (!user) redirect('/backoffice/login')
-
-    // `factors.totp` ya viene filtrado por Supabase a solo factores verificados.
-    const supabase = await createClient()
-    const { data: factors } = await supabase.auth.mfa.listFactors()
-    const hasVerifiedTotp = (factors?.totp.length ?? 0) > 0
-    // Con TOTP enrolado pero igual bloqueado, el único camino es volver a
-    // loguearse: ahí se pide el código y recién ese flujo llega a aal2.
-    redirect(hasVerifiedTotp ? '/backoffice/login' : '/backoffice/mfa')
+  } catch (err) {
+    if (err instanceof BackofficeSessionExpiredError) {
+      expired = true
+    } else {
+      const user = await getCurrentUser()
+      if (!user) redirect('/backoffice/login')
+    }
   }
+
+  // `redirect()` lanza su propia excepción de control de flujo: adentro del
+  // catch se la comería el propio catch. Mismo motivo por el que
+  // `redirectIfAlreadyAuthorized` usa un flag.
+  redirect(expired ? '/backoffice/login?error=sesion_vencida' : '/backoffice/mfa')
 }
 
 /**

@@ -1,5 +1,5 @@
 import { ensureContrast, hexToOklch, oklchToCss, readableOn, shift } from '@/lib/color'
-import type { Branding } from '@/models/schemas/branding.schema'
+import type { Branding, Density } from '@/models/schemas/branding.schema'
 
 /**
  * Convierte el kit de marca de una tienda en las variables CSS que shadcn ya usa.
@@ -24,6 +24,22 @@ import type { Branding } from '@/models/schemas/branding.schema'
  */
 export const STORE_THEME_SELECTOR = '[data-store-theme], [data-sonner-toaster]'
 
+/**
+ * Densidad → factor de la escala de espaciado de Tailwind.
+ *
+ * `--spacing` es la variable de la que Tailwind v4 deriva TODAS las utilidades
+ * numéricas (`p-4`, `gap-3`, `size-4`, `min-h-11`…), así que pisarla dentro del
+ * scope de la tienda mueve el ritmo entero sin tocar un solo componente. Ese
+ * alcance es también el motivo de que ningún factor baje de 1: `min-h-11` es
+ * exactamente 44px con el factor 1, y cualquier valor menor rompe el piso de
+ * target táctil desde el panel del local. La densidad solo puede dar MÁS aire.
+ */
+const DENSITY_SCALE: Record<Density, number> = {
+  compact: 1,
+  cozy: 1.1,
+  roomy: 1.22,
+}
+
 export function buildThemeCss(branding: Branding, selector: string = STORE_THEME_SELECTOR): string {
   const primary = hexToOklch(branding.color_primary)
   const accent = hexToOklch(branding.color_accent)
@@ -45,6 +61,11 @@ export function buildThemeCss(branding: Branding, selector: string = STORE_THEME
   const muted = shift(background, { l: surfaceStep * 1.4 })
   const border = shift(background, { l: surfaceStep * 3 })
 
+  const density = DENSITY_SCALE[branding.density]
+  // Redondeo a 4 decimales: `1.5 * 1.22` en float da 1.8299999999999998 y no
+  // hace falta emitir ese ruido en cada variable.
+  const scaled = (rem: number) => `${Number((rem * density).toFixed(4))}rem`
+
   const vars: Record<string, string> = {
     '--background': oklchToCss(background),
     '--foreground': oklchToCss(safeForeground),
@@ -61,6 +82,14 @@ export function buildThemeCss(branding: Branding, selector: string = STORE_THEME
     // fondo del propio campo de color rompe la garantía de contraste que
     // `ensureContrast` recién dejó en 4.5:1 justo. Mismo truco que
     // `--muted-foreground`: se tiñe desde el propio tono en vez de opacidad.
+    //
+    // OJO — con un primary de lightness media este token COLAPSA contra
+    // `--primary-foreground` y los dos salen blanco puro. No es un bug: si el
+    // campo apenas llega a 4.5:1 con blanco (el verde por defecto, #468511, da
+    // 4.54:1), no existe un segundo nivel más tenue que siga pasando. La
+    // jerarquía secundaria sobre el campo de color se hace con TAMAÑO Y PESO,
+    // nunca con opacidad — eso rompería la garantía. Verificado en el render:
+    // con el verde por defecto los dos emiten `oklch(1 0 0)`.
     '--primary-foreground-muted': oklchToCss(
       ensureContrast(shift(safePrimaryFg, { l: primaryIsDark ? 0.3 : -0.34, c: 0.7 }), primary, 4.5),
     ),
@@ -87,6 +116,56 @@ export function buildThemeCss(branding: Branding, selector: string = STORE_THEME
     '--ring': oklchToCss(shift(primary, { c: 0.9 })),
 
     '--radius': `${branding.radius_rem}rem`,
+
+    // Ver DENSITY_SCALE: mueve el ritmo entero de Tailwind dentro de la tienda.
+    '--spacing': scaled(0.25),
+    '--density-scale': String(density),
+
+    // --- Por qué estos tokens se REEMITEN acá y no se derivan en globals.css --
+    // `var()` dentro de una custom property se sustituye donde la propiedad se
+    // DECLARA, no donde se usa. O sea que un
+    // `--space-4: calc(1rem * var(--density-scale))` escrito en `:root` congela
+    // el factor de `:root` (1) y lo hereda ya resuelto: pisar
+    // `--density-scale` acá adentro no lo movería nunca.
+    // Verificado en el browser: con `--a: calc(10px * var(--k))` declarado
+    // donde `--k:1`, un descendiente con `--k:2` sigue midiendo 10px.
+    // `--spacing` sí funciona por la razón opuesta: Tailwind emite
+    // `calc(var(--spacing) * 4)` en el ELEMENTO, así que ahí sí resuelve
+    // contra el valor heredado. Todo lo demás hay que emitirlo ya calculado.
+    '--space-1': scaled(0.25),
+    '--space-2': scaled(0.5),
+    '--space-3': scaled(0.75),
+    '--space-4': scaled(1),
+    '--space-5': scaled(1.5),
+    '--space-6': scaled(2),
+    '--space-7': scaled(3),
+    '--space-8': scaled(4),
+
+    // El chasis pegajoso escala con la densidad porque lo que vive ADENTRO
+    // escala: `iconButtonClass` es `size-11`, o sea 11 × `--spacing`. Con el
+    // dock clavado en 3.5rem y la densidad en 1.22, el botón medía 53.7px
+    // dentro de una barra de 56px — 1px de aire, y el ícono asomando por el
+    // borde. Las alturas del chasis y sus contenidos son la misma escala o no
+    // son nada.
+    '--chrome-h': scaled(3.75),
+    '--rail-h': scaled(4.5),
+    '--sticky-offset': scaled(3.75 + 4.5),
+    '--dock-h': scaled(3.5),
+
+    // --- Columnas de la carta -------------------------------------------------
+    // La densidad no es solo aire: cambia la FORMA de la carta. Compacta = dos
+    // productos por fila (tarjeta vertical, foto arriba); cómoda y amplia = uno
+    // por fila, y a ese ancho la tarjeta se acuesta sola (foto a un costado)
+    // porque una foto a sangre completa por producto convierte la carta en un
+    // scroll infinito.
+    //
+    // Va como VARIABLE y no como prop para que `app/[store]/loading.tsx` —que
+    // no puede leer la tienda, Next no le pasa params— dibuje el esqueleto con
+    // la misma grilla que el contenido real. Un esqueleto con otra cantidad de
+    // columnas es un salto de layout en cada carga.
+    '--catalog-cols': branding.density === 'compact' ? '2' : '1',
+
+    '--dock-gap': scaled(0.75),
 
     '--font-sans': `var(--font-${branding.font_body})`,
     '--font-heading': `var(--font-${branding.font_heading})`,

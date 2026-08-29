@@ -35,6 +35,11 @@ const buttonVariants = cva(
        * valores chicos de Nova sin avisar. Si tocás este archivo por eso,
        * volvé a subir estos cuatro.
        */
+      // xs/sm (y sus variantes icon) clampean el radio a 10-12px: con el
+      // radio de marca completo (hasta ~2.6x en la escala) un botón de 24-28px
+      // de alto se vuelve una cápsula que se come el ícono o el texto. El
+      // clamp deja que un local de esquinas cuadradas siga viendo esquinas
+      // cuadradas y solo pone un techo prolijo al extremo redondeado.
       size: {
         default:
           "h-11 gap-1.5 px-3 has-data-[icon=inline-end]:pr-2.5 has-data-[icon=inline-start]:pl-2.5",

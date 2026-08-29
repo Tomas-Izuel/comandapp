@@ -1,6 +1,8 @@
 'use client'
 
 import * as React from 'react'
+import { randomUuidV4 } from '@/lib/uuid'
+import { usePreviewMode } from '@/lib/preview-mode'
 
 /**
  * Carrito por tienda, guardado en localStorage. El cliente no tiene cuenta:
@@ -15,6 +17,29 @@ const CART_KEY_PREFIX = 'burger-shop.cart.'
 const ORDERS_KEY = 'burger-shop.orders'
 const ORDERS_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
 const IDEMPOTENCY_KEY_PREFIX = 'burger-shop.idempotency.'
+
+/**
+ * Sufijo del slug de storage cuando `usePreviewMode()` está activo (ver
+ * `src/lib/preview-mode.ts`). Sin esto, el dueño jugando con su propia carta
+ * desde `/admin/apariencia` escribiría en la MISMA clave de localStorage que
+ * un cliente real de esa tienda usa en ese mismo navegador, y le dejaría un
+ * carrito fantasma. El namespace vive en la CLAVE de storage nomás: el
+ * `storeSlug` que ve el resto de la app (API, checkout) sigue siendo el real.
+ */
+const PREVIEW_STORAGE_SUFFIX = '.preview'
+
+// Espeja `cartItemSchema.quantity.max(50)` de `order.schema.ts`. Sin este
+// techo, sumar la cantidad de una línea que ya existe (`addLine`) o subirla a
+// mano (`setQuantity`) podía superar el máximo que el servidor acepta — y como
+// el carrito persiste en localStorage y nunca se re-valida hasta el checkout,
+// la línea quedaba MAL PARA SIEMPRE: `cartItemSchema` rechaza el carrito
+// ENTERO (los demás ítems, bien armados, se caen con él), así que el cliente
+// veía "El carrito tiene datos inválidos" en cada cotización y en cada intento
+// de pedido sin ninguna pista de cuál línea o por qué, hasta que alguien
+// notara la cantidad y la bajara a mano. Achicar acá, en el único lugar que
+// escribe cantidades, corta el problema de raíz en vez de solo mostrar el
+// error mejor.
+const MAX_LINE_QUANTITY = 50
 
 // Versión del formato guardado en cada clave. Sin esto, cambiar la forma de
 // lo persistido más adelante solo puede vaciar el storage (si el parser
@@ -68,7 +93,12 @@ function readCart(storeSlug: string): CartLine[] {
     if (!parsed || typeof parsed !== 'object' || (parsed as { v?: unknown }).v !== CART_FORMAT_VERSION) return []
     const lines = (parsed as { lines?: unknown }).lines
     if (!Array.isArray(lines)) return []
-    return lines.filter(isCartLine)
+    // Auto-cura una línea que haya quedado con `quantity` por encima del
+    // límite ANTES de que `MAX_LINE_QUANTITY` se aplicara en `addLine`/
+    // `setQuantity`: sin este saneo, esa línea vieja se queda inválida para
+    // siempre (rechaza el carrito ENTERO en cada cotización y en cada intento
+    // de pedido) y nada en la UI de carrito le explica al cliente por qué.
+    return lines.filter(isCartLine).map((line) => ({ ...line, quantity: Math.min(MAX_LINE_QUANTITY, Math.max(1, line.quantity)) }))
   } catch {
     return []
   }
@@ -132,6 +162,16 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
   const [lines, setLines] = React.useState<CartLine[]>([])
   const [hydrated, setHydrated] = React.useState(false)
 
+  // Namespace de storage: ver `PREVIEW_STORAGE_SUFFIX`. `storeSlug` (el que
+  // ve el resto de la app — API, `saveOrderRef`, etc.) queda intacto; solo la
+  // CLAVE de localStorage cambia. En la práctica esto se fija una sola vez:
+  // `CartProvider` vive en el layout de `/[store]` y no se desmonta entre
+  // navegaciones internas, y la carga inicial del iframe de vista previa
+  // siempre trae `?preview=brand` puesto, así que `isPreview` ya es `true`
+  // desde el primer render.
+  const isPreview = usePreviewMode()
+  const storageSlug = isPreview ? `${storeSlug}${PREVIEW_STORAGE_SUFFIX}` : storeSlug
+
   // Salta el primer write del efecto de persistencia: ese primer disparo pasa
   // justo después de hidratar y escribiría exactamente lo que se acaba de
   // leer, un round-trip a storage sin ningún cambio real detrás.
@@ -143,9 +183,9 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
     // cliente, para no pisar el HTML hidratado con contenido distinto.
     skipNextPersistRef.current = true
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLines(readCart(storeSlug))
+    setLines(readCart(storageSlug))
     setHydrated(true)
-  }, [storeSlug])
+  }, [storageSlug])
 
   React.useEffect(() => {
     if (!hydrated) return
@@ -153,30 +193,30 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
       skipNextPersistRef.current = false
       return
     }
-    writeCart(storeSlug, lines)
-  }, [storeSlug, lines, hydrated])
+    writeCart(storageSlug, lines)
+  }, [storageSlug, lines, hydrated])
 
   // La clave vive en un ref, no en estado: se lee/escribe desde el handler de
   // submit del checkout y no necesita disparar un re-render propio.
   const idempotencyKeyRef = React.useRef<string | null>(null)
 
   React.useEffect(() => {
-    idempotencyKeyRef.current = readIdempotencyKey(storeSlug)
-  }, [storeSlug])
+    idempotencyKeyRef.current = readIdempotencyKey(storageSlug)
+  }, [storageSlug])
 
   const discardIdempotencyKey = React.useCallback(() => {
     if (idempotencyKeyRef.current === null) return
     idempotencyKeyRef.current = null
-    writeIdempotencyKey(storeSlug, null)
-  }, [storeSlug])
+    writeIdempotencyKey(storageSlug, null)
+  }, [storageSlug])
 
   const ensureIdempotencyKey = React.useCallback(() => {
     if (!idempotencyKeyRef.current) {
-      idempotencyKeyRef.current = crypto.randomUUID()
-      writeIdempotencyKey(storeSlug, idempotencyKeyRef.current)
+      idempotencyKeyRef.current = randomUuidV4()
+      writeIdempotencyKey(storageSlug, idempotencyKeyRef.current)
     }
     return idempotencyKeyRef.current
-  }, [storeSlug])
+  }, [storageSlug])
 
   const addLine = React.useCallback(
     (line: CartLine) => {
@@ -189,10 +229,10 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
         const idx = prev.findIndex((l) => lineKey(l) === key)
         if (idx >= 0) {
           const next = [...prev]
-          next[idx] = { ...next[idx], quantity: next[idx].quantity + line.quantity }
+          next[idx] = { ...next[idx], quantity: Math.min(MAX_LINE_QUANTITY, next[idx].quantity + line.quantity) }
           return next
         }
-        return [...prev, line]
+        return [...prev, { ...line, quantity: Math.min(MAX_LINE_QUANTITY, line.quantity) }]
       })
     },
     [discardIdempotencyKey],
@@ -213,7 +253,7 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
         if (quantity <= 0) return prev.filter((_, i) => i !== index)
         const next = [...prev]
         if (!next[index]) return prev
-        next[index] = { ...next[index], quantity }
+        next[index] = { ...next[index], quantity: Math.min(MAX_LINE_QUANTITY, quantity) }
         return next
       })
     },

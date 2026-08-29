@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { createHash } from 'node:crypto'
 import { Resend } from 'resend'
 import { serverEnv } from '@/lib/env.server'
 import { log } from '@/lib/log'
@@ -33,10 +34,30 @@ export async function sendOwnerInviteEmail(p: {
   const resend = new Resend(env.RESEND_API_KEY)
 
   try {
-    // Idempotency key con el mismo formato que el resto de los envíos
-    // (<evento>/<entidad>): un reenvío accidental por doble click en
-    // "Reenviar invitación" dentro de la ventana de 24hs de Resend devuelve
-    // la respuesta original en vez de mandar el mail dos veces.
+    // La clave de idempotencia deriva del CONTENIDO (`inviteUrl`), no del id
+    // de la tienda ni del reloj — mismo fix que `courier-invite.tsx`, ver el
+    // comentario largo ahí para el porqué completo. Resumen: `inviteUrl` trae
+    // un `token_hash` nuevo en cada llamada a `generateLink()`, que nunca
+    // repite token. Con una clave atada solo al `storeId` (con o sin balde de
+    // tiempo: se probó con un balde de un minuto y dio el mismo resultado) el
+    // cuerpo YA es distinto en la segunda invitación, así que Resend nunca
+    // encuentra qué deduplicar y responde `409 invalid_idempotent_request`
+    // (verificado contra la API real) — no un 200 silencioso. Ese 409 se traga
+    // en el log si lo dispara `sendOwnerInvite` (el alta inicial, que nunca
+    // tira) o sale como `DomainError` con el mensaje crudo de Resend si lo
+    // dispara `resendOwnerInvite`. Ninguna de las dos cosas es lo que se
+    // busca: una clave atada a la entidad no deduplica nada, solo convierte
+    // cualquier invitación posterior en un error.
+    //
+    // Hasheando el `inviteUrl`, la clave coincide únicamente cuando el cuerpo
+    // es idéntico —un reintento real del mismo request— y dedupea bien
+    // (Resend devuelve el `id` cacheado); una invitación nueva trae un link
+    // nuevo y por lo tanto una clave nueva, así que sale sin colisionar. Lo
+    // que esto NO cubre es el doble click en "Reenviar invitación": dos
+    // clicks generan dos links y dos claves, así que salen los dos mails —
+    // eso lo frena `disabled={pending}` en la UI, no la idempotencia.
+    const idempotencyKey = `store-owner-invite/${p.storeId}/${createHash('sha256').update(p.inviteUrl).digest('hex').slice(0, 32)}`
+
     const { data, error } = await resend.emails.send(
       {
         from: `${env.RESEND_FROM_NAME} <${env.RESEND_FROM_EMAIL}>`,
@@ -44,7 +65,7 @@ export async function sendOwnerInviteEmail(p: {
         subject: `Entrá al panel de ${p.storeName}`,
         react: <StoreOwnerInviteEmail storeName={p.storeName} inviteUrl={p.inviteUrl} siteUrl={env.NEXT_PUBLIC_SITE_URL} />,
       },
-      { idempotencyKey: `store-owner-invite/${p.storeId}` },
+      { idempotencyKey },
     )
 
     if (error) {

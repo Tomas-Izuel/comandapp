@@ -3,6 +3,7 @@ import { getStoreBySlug } from '@/models/store.model'
 import { buildThemeCss, themeClass } from '@/lib/theme'
 import { OrderTracking } from '@/views/storefront/order-tracking'
 import { EmptyState } from '@/views/shared/states'
+import { SiteFooter } from '@/views/shared/site-footer'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
 
@@ -12,7 +13,7 @@ export default async function OrderTrackingPage(props: PageProps<'/pedido/[token
 
   if (!order) {
     return (
-      <div className="flex flex-1 flex-col">
+      <div className="flex min-h-full flex-1 flex-col">
         <EmptyState
           className="flex-1"
           title="No encontramos este pedido"
@@ -23,6 +24,7 @@ export default async function OrderTrackingPage(props: PageProps<'/pedido/[token
             </Button>
           }
         />
+        <SiteFooter />
       </div>
     )
   }
@@ -41,6 +43,10 @@ export default async function OrderTrackingPage(props: PageProps<'/pedido/[token
       {/* CSS ya validado por brandingSchema en el modelo */}
       {themeCss ? <style dangerouslySetInnerHTML={{ __html: themeCss }} /> : null}
       <OrderTracking token={token} initialOrder={order} timezone={store?.timezone} />
+      {/* Adentro del div con `data-store-theme`: así el pie hereda el tema
+          del local igual que el resto de esta página, aunque la ruta viva
+          afuera de `/[store]`. */}
+      <SiteFooter />
     </div>
   )
 }

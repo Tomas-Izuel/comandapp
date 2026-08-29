@@ -15,6 +15,22 @@
 const LOCALE = 'es-AR'
 
 /**
+ * Reloj de 24 horas, explícito.
+ *
+ * `es-AR` en `Intl` resuelve a ciclo de 12 horas, así que estos formateadores
+ * venían imprimiendo "01:40 p. m." mientras sus propios comentarios prometían
+ * "22:35". No es cosmético: son horas OPERATIVAS —cuándo entró un pedido,
+ * cuándo va a estar listo—, y en Argentina eso se lee y se canta en 24 horas.
+ * El sufijo además cuesta ~40px por celda, que en la tabla densa del historial
+ * era la diferencia entre que el importe entre o se corte.
+ *
+ * `hourCycle: 'h23'` y no `hour12: false`: este último, combinado con
+ * `hour: '2-digit'`, puede caer en h24 según la versión de ICU e imprimir
+ * "24:00" en vez de "00:00".
+ */
+const CLOCK_24 = { hourCycle: 'h23' } as const
+
+/**
  * Cuánto se corre la zona respecto de UTC en ese instante, en milisegundos.
  *
  * Se formatea el instante en la zona destino y se lee como si fuera UTC: la
@@ -105,13 +121,16 @@ export function formatDayShort(day: string): string {
 
 /** "22:35" */
 export function formatTime(iso: string, timeZone: string): string {
-  return new Intl.DateTimeFormat(LOCALE, { timeZone, hour: '2-digit', minute: '2-digit' }).format(new Date(iso))
+  return new Intl.DateTimeFormat(LOCALE, { timeZone, ...CLOCK_24, hour: '2-digit', minute: '2-digit' }).format(
+    new Date(iso),
+  )
 }
 
 /** "26/08, 22:35" */
 export function formatDateTime(iso: string, timeZone: string): string {
   return new Intl.DateTimeFormat(LOCALE, {
     timeZone,
+    ...CLOCK_24,
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
@@ -123,6 +142,7 @@ export function formatDateTime(iso: string, timeZone: string): string {
 export function formatDateTimeLong(iso: string, timeZone: string): string {
   return new Intl.DateTimeFormat(LOCALE, {
     timeZone,
+    ...CLOCK_24,
     day: '2-digit',
     month: 'long',
     year: 'numeric',

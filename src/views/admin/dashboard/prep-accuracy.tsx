@@ -29,7 +29,7 @@ export function PrepAccuracy({ prepAccuracy }: { prepAccuracy: StoreDashboard['p
           { label: 'Real', value: `${avgRealMinutes} min` },
         ]}
       />
-      <p className="max-w-[60ch] text-sm">
+      <p className="max-w-[60ch] text-sm lg:text-base">
         {delta === 0 ? (
           'La cocina cumple el estimado al pie de la letra.'
         ) : delta > 0 ? (
@@ -44,7 +44,7 @@ export function PrepAccuracy({ prepAccuracy }: { prepAccuracy: StoreDashboard['p
           </>
         )}
       </p>
-      <p className="text-muted-foreground text-xs">Basado en {sampleSize} pedidos</p>
+      <p className="text-muted-foreground text-xs lg:text-sm">Basado en {sampleSize} pedidos</p>
     </div>
   )
 }

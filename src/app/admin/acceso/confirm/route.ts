@@ -60,5 +60,12 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.redirect(new URL('/admin/acceso?error=link_invalido', origin))
+  // Repartidor y staff comparten este mismo callback (ver comentario de
+  // `SUPPORTED_OTP_TYPES`), así que el link vencido de un repartidor no puede
+  // devolverlo a `/admin/acceso`: ahí nunca va a tener sesión de staff, y
+  // pedir un link nuevo desde ese formulario le manda un link que lo trae de
+  // vuelta acá. `next` ya viene sanitizado arriba (`isSafeRedirectPath`), así
+  // que este `startsWith` es sobre una ruta propia, no sobre el query crudo.
+  const failureAcceso = next.startsWith('/repartidor') ? '/repartidor/acceso' : '/admin/acceso'
+  return NextResponse.redirect(new URL(`${failureAcceso}?error=link_invalido`, origin))
 }

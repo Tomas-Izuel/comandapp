@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import { type CartLine, lineKey } from '@/lib/cart'
+import type { DeliveryQuote } from '@/models/types'
 
 /**
  * El precio SIEMPRE sale del servidor (`priceCart` en order.model.ts, vía
@@ -24,6 +25,12 @@ type PreviewOk = {
   store: { slug: string; name: string; currency: string; acceptingOrders: boolean; inStorePaymentEnabled: boolean; minOrderCents: number }
   priced: { items: PricedItemQuote[]; subtotalCents: number; totalCents: number; basePrepMinutes: number }
   eta: { baseMinutes: number; multiplier: number; etaMinutes: number; activeOrders: number; isBusy: boolean }
+  /**
+   * Todo lo que hace falta para pintar la elección retiro/delivery, ya
+   * calculado en el servidor — el browser no suma nada, ni plata ni minutos
+   * de mínimo: solo elige qué mostrar según el método elegido.
+   */
+  delivery: DeliveryQuote
 }
 
 async function fetchPreview(storeSlug: string, items: unknown[], signal: AbortSignal): Promise<PreviewOk> {
@@ -94,6 +101,14 @@ export function usePricedLines(storeSlug: string, lines: CartLine[]) {
 
     fetchPreview(storeSlug, currentLines.map(toApiItem), controller.signal)
       .then((body) => {
+        // Una respuesta puede llegar DESPUÉS de que el efecto haya sido
+        // reemplazado por uno más nuevo (otro cambio de `lines` disparó otro
+        // fetch mientras este seguía en vuelo). `controller.abort()` en el
+        // cleanup no garantiza que ESTA promesa rechace — si la respuesta ya
+        // había llegado, `.then` igual se ejecuta con datos VIEJOS. Sin este
+        // chequeo, una cotización lenta para un carrito ya superado podía
+        // pisar el resultado fresco y correcto con uno desactualizado.
+        if (controller.signal.aborted) return
         // Un éxito cubre TODO el carrito actual: se puede reconstruir la
         // caché desde cero en vez de ir acumulando, así una línea que ya no
         // está en el carrito no se queda pegada en memoria para siempre.
@@ -123,7 +138,22 @@ export function usePricedLines(storeSlug: string, lines: CartLine[]) {
             attributed = true
             return { status: 'error', line, index, error: message, quote: cached }
           }
-          return cached ? { status: 'ready', line, index, quote: cached } : { status: 'error', line, index, error: message }
+          if (cached) return { status: 'ready', line, index, quote: cached }
+          // Sin caché (recién llegado a /carrito, antes del primer éxito) Y sin
+          // poder atribuirle el error a ESTA línea puntual: no hay ninguna
+          // evidencia de que sea la culpable. Antes esto caía a `status:
+          // 'error'` con el mensaje CRUDO del servidor — que nombra un
+          // producto/opción concretos ("Elegí al menos 1 opción de 'Punto de
+          // cocción' para 'Clásica'") — así que en el primer render, con el
+          // caché SIEMPRE vacío, una sola línea mal armada pintaba ese mensaje
+          // en TODAS las líneas, la bien armada incluida: el cliente veía "te
+          // falta elegir la opción" en un ítem donde SÍ la había elegido. Sin
+          // caché no hay con qué comparar el nombre citado, así que esta línea
+          // queda en estado DESCONOCIDO (no fallado): se pinta como
+          // "calculando" en vez de acusarla de algo que quizás no hizo. El
+          // `cartError` de más abajo ya cubre el caso "no se puede atribuir" a
+          // nivel carrito.
+          return { status: 'loading', line, index }
         })
         setState({ results, cartError: attributed ? null : message })
       })
@@ -146,11 +176,12 @@ export type CheckoutQuote =
   | { status: 'error'; error: string }
 
 /**
- * Cotización única del pedido completo, con el ETA de la cocina. Es la
- * revalidación que pide el producto: "si algo cambió se avisa", justo antes
- * de mostrar el paso de pago. Ya hacía un solo request para todo el
- * carrito (a diferencia de `usePricedLines`, que hasta A-03 pedía línea por
- * línea).
+ * Cotización única del pedido completo, con el ETA de la cocina y la cotización
+ * de envío (`delivery`). Es la revalidación que pide el producto: "si algo
+ * cambió se avisa", justo antes de mostrar el paso de pago. Un solo request
+ * para todo el carrito (a diferencia de `usePricedLines`, que hasta A-03 pedía
+ * línea por línea) — la elección retiro/delivery no dispara un segundo fetch,
+ * `delivery` viaja en la misma respuesta.
  */
 export function useCheckoutQuote(storeSlug: string, lines: CartLine[]): CheckoutQuote {
   const linesKey = JSON.stringify(lines)
@@ -168,7 +199,16 @@ export function useCheckoutQuote(storeSlug: string, lines: CartLine[]): Checkout
     setQuote({ status: 'loading' })
 
     fetchPreview(storeSlug, currentLines.map(toApiItem), controller.signal)
-      .then((data) => setQuote({ status: 'ready', data }))
+      .then((data) => {
+        // Mismo motivo que en `usePricedLines`: abortar el controller no
+        // garantiza que esta promesa ya rechazada — una respuesta vieja que
+        // llega tarde puede pisar el 'ready' fresco (o un error real más
+        // nuevo) con el resultado de un carrito que el cliente ya cambió.
+        // Nunca se quiere que ESE dato viejo decida si el botón de confirmar
+        // se habilita.
+        if (controller.signal.aborted) return
+        setQuote({ status: 'ready', data })
+      })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return
         setQuote({ status: 'error', error: err instanceof Error ? err.message : 'No se pudo calcular el pedido' })

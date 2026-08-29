@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { resolveAdminSession } from '@/controllers/admin.controller'
+import { PageFrame } from '@/views/admin/page-frame'
 import { SettingsForm } from '@/views/admin/ajustes/settings-form'
 
 export default async function AdminSettingsPage() {
@@ -7,9 +8,8 @@ export default async function AdminSettingsPage() {
   if (session.status !== 'ok') redirect('/admin/acceso')
 
   return (
-    <div className="max-w-xl">
-      <h1 className="mb-6 text-2xl font-semibold tracking-tight">Ajustes</h1>
-      <SettingsForm storeId={session.store.id} store={session.store} />
-    </div>
+    <PageFrame title="Ajustes" width="form">
+      <SettingsForm storeId={session.store.id} store={session.store} role={session.role} />
+    </PageFrame>
   )
 }

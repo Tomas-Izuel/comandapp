@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/client'
 import { clientEnv } from '@/lib/env.client'
+import { randomUuidV4 } from '@/lib/uuid'
 
 const BUCKET = 'product-images'
 const MAX_DIMENSION = 1600
@@ -75,7 +76,10 @@ export async function uploadProductImage(
     }
 
     const extension = compressed.type === 'image/jpeg' ? 'jpg' : (file.name.split('.').pop() ?? 'jpg')
-    const path = `${storeId}/${crypto.randomUUID()}.${extension}`
+    // `randomUuidV4` y no `crypto.randomUUID()`: el dueño del local sube las
+    // fotos DESDE EL CELULAR, y si entra por IP de LAN (http://192.168.x.x)
+    // el contexto no es seguro y `crypto.randomUUID` no existe.
+    const path = `${storeId}/${randomUuidV4()}.${extension}`
 
     const supabase = createClient()
     onPhase?.('uploading')

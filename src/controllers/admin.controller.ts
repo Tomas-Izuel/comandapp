@@ -1,10 +1,12 @@
 import 'server-only'
 
 import { cache } from 'react'
+import { z } from 'zod'
 import { getCurrentUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { decryptSecret, lastFour } from '@/lib/crypto/secrets'
 import { requireStoreMembership, listStoresForCurrentUser } from '@/models/store.model'
+import { findCourierMembership } from '@/models/courier.model'
 import type { Store } from '@/models/types'
 
 /**
@@ -13,10 +15,15 @@ import type { Store } from '@/models/types'
  * `cache()` para que layout y cada page puedan pedirla de forma independiente
  * (piso de autorización: "cada page verifica membresía") sin duplicar el
  * round-trip a Postgres dentro del mismo request.
+ *
+ * `no-store.isCourier` distingue "nunca lo sumaron a ningún local" de "es
+ * repartidor, pero de un portal distinto": ver el comentario en
+ * `resolveAdminSession` sobre por qué esto se chequea acá y no se infiere de
+ * que `store` haya salido vacío.
  */
 export type AdminSession =
   | { status: 'unauthenticated' }
-  | { status: 'no-store'; email: string }
+  | { status: 'no-store'; email: string; isCourier: boolean }
   | { status: 'ok'; email: string; store: Store; role: 'owner' | 'staff' }
 
 export const resolveAdminSession = cache(async (): Promise<AdminSession> => {
@@ -29,7 +36,17 @@ export const resolveAdminSession = cache(async (): Promise<AdminSession> => {
 
   const stores = await listStoresForCurrentUser()
   const store = stores[0]
-  if (!store) return { status: 'no-store', email: user.email ?? '' }
+  if (!store) {
+    // `private.is_store_member()` ya está endurecida a `role in ('owner',
+    // 'staff')`, así que `listStoresForCurrentUser` (que depende de esa RLS)
+    // ya devuelve `[]` para un repartidor sin que nadie lo pida acá. Confiar
+    // solo en eso sería apoyar una defensa en el efecto lateral de OTRA
+    // función — si mañana esa RLS se afloja por error, este gate se afloja
+    // con ella sin que nadie lo note. Por eso se repite, explícito y directo
+    // contra `findCourierMembership`, que no depende de esa policy.
+    const courier = await findCourierMembership()
+    return { status: 'no-store', email: user.email ?? '', isCourier: courier !== null }
+  }
 
   const { role } = await requireStoreMembership(store.id)
   return { status: 'ok', email: user.email ?? '', store, role }
@@ -79,3 +96,34 @@ export async function getPaymentConnectionStatus(storeId: number): Promise<Payme
     accessTokenPreview: token ? `•••• ${lastFour(token)}` : null,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Confirmación por código de los cambios que tocan plata
+//
+// Estos dos viven acá y no en `admin.actions.ts` porque un archivo con
+// `'use server'` solo puede exportar funciones async: ni tipos, ni schemas, ni
+// constantes. Las acciones los importan desde este lado.
+// ---------------------------------------------------------------------------
+
+/**
+ * Exactamente 6 dígitos.
+ *
+ * El `trim()` y el reemplazo de espacios no son cosmética: el código llega
+ * pegado desde el mail, y en mobile la selección se lleva un espacio de más
+ * más veces de las que uno cree. Rechazarlo por eso es hacerle perder un
+ * intento de los cinco a alguien que puso el código correcto.
+ */
+export const confirmationCodeSchema = z
+  .string()
+  .transform((v) => v.replace(/\s/g, ''))
+  .pipe(z.string().regex(/^\d{6}$/, 'El código son 6 dígitos'))
+
+/**
+ * Lo que devuelve pedir un cambio sensible: el id de la solicitud (para
+ * confirmarla) y a qué casilla salió el código, enmascarada.
+ *
+ * `sentTo` va enmascarado y no completo porque esta pantalla la puede estar
+ * mirando alguien parado al lado de la caja. Alcanza para que el dueño
+ * reconozca su casilla.
+ */
+export type PendingChangeStarted = { requestId: number; sentTo: string }

@@ -142,7 +142,7 @@ export function ProductImageField({
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <span className="text-muted-foreground text-xs">{PHASE_LABEL[phase]}</span>
               <div
-                className="bg-muted h-1 w-full overflow-hidden rounded-full"
+                className="bg-muted h-1 w-full overflow-hidden rounded-pill"
                 role="progressbar"
                 aria-label="Subiendo foto"
                 aria-valuemin={0}
@@ -150,7 +150,7 @@ export function ProductImageField({
                 aria-valuenow={PHASE_PROGRESS[phase]}
               >
                 <div
-                  className="bg-primary h-full rounded-full transition-[width] duration-(--dur-base)"
+                  className="bg-primary h-full rounded-pill transition-[width] duration-(--dur-base)"
                   style={{ width: `${PHASE_PROGRESS[phase]}%` }}
                 />
               </div>

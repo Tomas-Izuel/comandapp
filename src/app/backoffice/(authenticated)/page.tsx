@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
+import { requireBackofficeSession } from '@/controllers/platform.controller'
 import { getPlatformMetrics } from '@/models/platform.model'
 import { PlatformMetricsList } from '@/views/backoffice/metrics-list'
 import { EmptyState } from '@/views/shared/states'
@@ -8,6 +9,14 @@ import { Button } from '@/components/ui/button'
 export const metadata: Metadata = { title: 'Métricas — Backoffice' }
 
 export default async function BackofficeDashboardPage() {
+  // El guard va acá y no solo en el layout: App Router renderiza layout y page
+  // EN PARALELO, así que el `redirect()` del layout no llega a frenar esta
+  // función. Sin esta línea, una sesión en `aal1` (recién salida del callback
+  // de Google, todavía sin TOTP) hace que `getPlatformMetrics` tire antes de
+  // que el redirect gane la carrera, y lo que se ve es el error boundary en
+  // lugar de la pantalla de enrolamiento. Mismo patrón que las pages de
+  // /admin, que se guardan una por una.
+  await requireBackofficeSession()
   const metrics = await getPlatformMetrics()
 
   return (

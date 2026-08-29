@@ -17,20 +17,23 @@ export function TopProducts({ products, currency }: { products: TopProduct[]; cu
   return (
     <ol className="flex flex-col gap-3">
       {products.map((product, index) => (
-        <li key={product.productId ?? product.name} className="grid grid-cols-[1.5rem_1fr_auto] items-center gap-3">
-          <span className="text-muted-foreground tabular text-right text-xs">{index + 1}</span>
+        <li
+          key={product.productId ?? product.name}
+          className="grid grid-cols-[1.5rem_1fr_auto] items-center gap-3 lg:grid-cols-[1.75rem_1fr_auto]"
+        >
+          <span className="text-muted-foreground tabular text-right text-xs lg:text-sm">{index + 1}</span>
           <div className="min-w-0">
-            <p className="truncate text-sm">{product.name}</p>
-            <div className="bg-muted mt-1.5 h-1.5 w-full rounded-full">
+            <p className="truncate text-sm lg:text-base">{product.name}</p>
+            <div className="bg-muted mt-1.5 h-1.5 w-full rounded-pill">
               <div
-                className="bg-chart-1 h-1.5 rounded-full"
+                className="bg-chart-1 h-1.5 rounded-pill"
                 style={{ width: `${Math.max(4, (product.quantity / max) * 100)}%` }}
               />
             </div>
           </div>
           <div className="text-right">
-            <p className="tabular text-sm font-medium">{product.quantity}×</p>
-            <Price cents={product.revenueCents} currency={currency} className="text-muted-foreground text-xs" />
+            <p className="tabular text-sm font-medium lg:text-base">{product.quantity}×</p>
+            <Price cents={product.revenueCents} currency={currency} className="text-muted-foreground text-xs lg:text-sm" />
           </div>
         </li>
       ))}

@@ -342,13 +342,28 @@ max_frequency = "5s"
 # Configure logged in session timeouts.
 #
 # Sin esto la sesion vive mientras rote el refresh token, o sea indefinidamente.
-# Para un platform admin que puede suspender locales es demasiado; para el staff
-# de un local, volver a pedir el magic link una vez por dia es aceptable.
+#
+# Estos dos numeros son POR PROYECTO: un solo valor para el staff del local, los
+# repartidores y el platform admin. Estuvieron en 24h/8h, y eso deslogueaba al
+# staff todos los dias: un local que cierra a la noche pasa las 8h de
+# inactividad dormido y amanece afuera, y el timebox lo corta igual aunque
+# hubiera estado usando el panel. Con magic link como unica puerta a /admin,
+# cada re-login es ir a buscar un mail desde el celular en el mostrador.
+#
+# El platform admin NO puede tener 30 dias, pero como el ajuste es por proyecto
+# no se puede separar aca: su limite propio (12h desde el segundo factor) vive
+# en `requirePlatformAdmin()` de src/models/platform.model.ts, leyendo el claim
+# `amr` del JWT.
+#
+# TRAMPA: este archivo configura SOLO el stack local. La sesion del proyecto
+# hosted se configura en Authentication -> Sessions del dashboard. Cambiar esto
+# aca y nada mas deja produccion deslogueando a las 24hs, y el sintoma no
+# menciona este archivo en ningun lado. Mismo caso que el SMTP.
 [auth.sessions]
 # Force log out after the specified duration.
-timebox = "24h"
+timebox = "720h"
 # Force log out if the user has been inactive longer than the specified duration.
-inactivity_timeout = "8h"
+inactivity_timeout = "336h"
 
 # This hook runs before a new user is created and allows developers to reject the request based on the incoming user object.
 #

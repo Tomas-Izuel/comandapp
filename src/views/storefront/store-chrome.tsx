@@ -2,27 +2,33 @@
 
 import Image from 'next/image'
 import Link from 'next/link'
-import { ClipboardList, ShoppingBag } from 'lucide-react'
-import { useCart } from '@/lib/cart'
+import { usePathname } from 'next/navigation'
+import { ClipboardList } from 'lucide-react'
+import { StoreDock } from '@/views/storefront/store-dock'
+import { SiteFooter } from '@/views/shared/site-footer'
 import type { StoreWithBranding } from '@/models/types'
 
 /**
  * Encabezado pegajoso y delgado de la vitrina: marca del local (nunca la de
- * la plataforma), acceso a "Mis pedidos" y el carrito con contador.
+ * la plataforma) y acceso a "Mis pedidos". El carrito se fue de acá — ahora
+ * vive en `StoreDock`, al pie — porque tenerlo arriba Y abajo es ruido: dos
+ * lugares para la misma acción no son dos oportunidades, son una duda.
  *
- * La altura queda fija en 3.75rem (`size-11` + `py-2`) a propósito: sumada a
- * la del riel de categorías —también 3.75rem, ver `catalog-list.tsx`— da
- * exactamente `--sticky-offset` (7.5rem, `globals.css`), que es lo que
- * `[data-scroll-anchor]` usa para que las dos barras pegajosas no tapen la
- * sección a la que acaba de llevar un chip.
+ * La altura es `--chrome-h` (3.75rem, `globals.css`) a propósito: sumada a
+ * la del riel de categorías (`--rail-h`, `catalog-list.tsx`) da
+ * `--sticky-offset`, que es lo que `[data-scroll-anchor]` usa para que las
+ * dos barras pegajosas no tapen la sección a la que acaba de llevar un chip.
  */
 export function StoreChrome({ store, children }: { store: StoreWithBranding; children: React.ReactNode }) {
-  const { itemCount, hydrated } = useCart()
-  const cartLabel = hydrated && itemCount > 0 ? `Carrito, ${itemCount} ${itemCount === 1 ? 'ítem' : 'ítems'}` : 'Carrito'
+  const pathname = usePathname()
+  // El dock solo se dibuja en el catálogo: `/producto/[id]`, `/carrito` y
+  // `/checkout` ya tienen su propia `ActionBar` fija al pie, y dos barras
+  // apiladas es exactamente lo que el contrato de dirección no quiere.
+  const isCatalogRoute = pathname === `/${store.slug}`
 
   return (
     <>
-      <header className="border-border bg-background sticky top-0 z-40 flex items-center justify-between border-b px-4 py-2 sm:px-6">
+      <header className="border-border bg-background sticky top-0 z-40 flex h-(--chrome-h) items-center justify-between border-b px-4 sm:px-6">
         <Link href={`/${store.slug}`} className="flex min-w-0 items-center" aria-label={store.name}>
           {store.branding.logo_url ? (
             // Alto fijo, ancho contenido: el logo puede llegar con cualquier
@@ -37,38 +43,27 @@ export function StoreChrome({ store, children }: { store: StoreWithBranding; chi
             <span className="display text-foreground min-w-0 truncate text-base font-semibold">{store.name}</span>
           )}
         </Link>
-        <div className="flex shrink-0 items-center gap-1">
-          <Link
-            href="/mis-pedidos"
-            className="text-foreground hover:bg-muted flex size-11 items-center justify-center rounded-lg transition-colors duration-(--dur-fast)"
-            aria-label="Mis pedidos"
-          >
-            <ClipboardList className="size-5" aria-hidden />
-          </Link>
-          <Link
-            href={`/${store.slug}/carrito`}
-            className="text-foreground hover:bg-muted relative flex size-11 items-center justify-center rounded-lg transition-colors duration-(--dur-fast)"
-            aria-label={cartLabel}
-          >
-            <ShoppingBag className="size-5" aria-hidden />
-            {hydrated && itemCount > 0 ? (
-              // `key={itemCount}` remonta el badge en cada cambio: es lo que
-              // hace que `animate-bump` (globals.css) vuelva a jugar desde
-              // cero cada vez, que es el "el contador late" del contrato de
-              // dirección — el único otro momento animado, junto con la barra
-              // de carrito entrando (eso lo resuelve la ficha de producto,
-              // otro slice).
-              <span
-                key={itemCount}
-                className="bg-primary text-primary-foreground tabular animate-bump absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[0.625rem] font-semibold"
-              >
-                {itemCount}
-              </span>
-            ) : null}
-          </Link>
-        </div>
+        <Link
+          href="/mis-pedidos"
+          className="text-foreground hover:bg-muted flex size-11 items-center justify-center rounded-lg transition-colors duration-(--dur-fast)"
+          aria-label="Mis pedidos"
+        >
+          <ClipboardList className="size-5" aria-hidden />
+        </Link>
       </header>
       <main className="flex flex-1 flex-col">{children}</main>
+      {/* Solo en el catálogo: `/producto`, `/carrito` y `/checkout` ya tienen
+          su propia `ActionBar` fija, y el pie de la plataforma ahí sería una
+          segunda barra al pie compitiendo con la de la tarea en curso.
+          `.dock-clearance` en el footer (no padding a mano) porque el dock es
+          `fixed` y no reserva espacio: sin eso, al hacer scroll hasta el
+          final, el dock tapa las últimas líneas del pie. */}
+      {isCatalogRoute ? (
+        <>
+          <SiteFooter className="dock-clearance" />
+          <StoreDock store={store} />
+        </>
+      ) : null}
     </>
   )
 }

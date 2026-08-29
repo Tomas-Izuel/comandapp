@@ -220,7 +220,16 @@ export function ProductDrawer({
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange} direction="right">
-      <DrawerContent className="w-full sm:max-w-lg">
+      {/*
+        `lg:max-w-3xl` (48rem) — mismo número que `--admin-max-form`, el ancho
+        que el chasis usa para columnas de lectura del panel: no es
+        casualidad, es el mismo criterio ("suficiente para un formulario, no
+        una página"). Este era el formulario más pesado del panel (foto +
+        precio + prep + grupos de opciones) apretado en 32rem; el editor de
+        modificadores es lo que más gana, porque queda a todo el ancho nuevo
+        del drawer en vez de compartirlo con la foto (ver el grid de abajo).
+      */}
+      <DrawerContent className="w-full sm:max-w-lg lg:max-w-3xl">
         <DrawerHeader>
           <DrawerTitle>{mode === 'create' ? 'Nuevo producto' : 'Editar producto'}</DrawerTitle>
           <DrawerDescription>El precio y el tiempo de preparación los ve el cliente antes de pedir.</DrawerDescription>
@@ -228,144 +237,155 @@ export function ProductDrawer({
 
         <ScrollArea className="min-h-0 flex-1 px-4">
           <form id="product-form" onSubmit={onSubmit} className="flex flex-col gap-4 pb-6">
-            {/* Primero la foto, no al final: es la decisión que más vende
-                (ver brief de superficie), y el último campo de un form largo
-                se trata como opcional aunque no lo sea. */}
-            <div className="flex flex-col gap-1.5">
-              <Label>Foto</Label>
-              <Controller
-                control={control}
-                name="imagePath"
-                render={({ field }) => (
-                  <ProductImageField storeId={storeId} path={field.value} onChange={field.onChange} />
-                )}
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={nameId}>Nombre</Label>
-              <Input
-                id={nameId}
-                {...register('name')}
-                aria-invalid={!!errors.name}
-                aria-describedby={errors.name ? nameErrorId : undefined}
-                className="h-10"
-              />
-              {errors.name ? (
-                <p id={nameErrorId} role="alert" className="text-destructive text-xs">
-                  {errors.name.message}
-                </p>
-              ) : null}
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={descId}>Descripción</Label>
-              <Textarea
-                id={descId}
-                {...register('description', { setValueAs: (v: string) => (v.trim() === '' ? null : v) })}
-                rows={2}
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={categorySelectId}>Categoría</Label>
-              <Controller
-                control={control}
-                name="categoryId"
-                render={({ field }) => (
-                  <Select
-                    value={field.value === null ? 'none' : String(field.value)}
-                    onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}
-                  >
-                    <SelectTrigger id={categorySelectId} className="h-10 w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Sin categoría</SelectItem>
-                      {categories.map((category) => (
-                        <SelectItem key={category.id} value={String(category.id)}>
-                          {category.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
+            {/*
+              ≥lg: foto a la izquierda, el resto del form a la derecha. En
+              32rem (el ancho viejo del drawer) esto hubiera dejado ambas
+              columnas apretadas; con el drawer en 48rem (`lg:max-w-3xl` en
+              `DrawerContent`) cada una respira. La foto sigue siendo el
+              primer campo del DOM — el orden de lectura y de tab no cambia,
+              solo la posición — porque sigue siendo la decisión que más
+              vende (ver brief de superficie) y no se trata como opcional
+              por no ir "arriba de todo" en esta disposición.
+            */}
+            <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[16rem_1fr] lg:items-start lg:gap-6">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={priceId}>Precio</Label>
+                <Label>Foto</Label>
                 <Controller
                   control={control}
-                  name="priceCents"
+                  name="imagePath"
                   render={({ field }) => (
-                    <DraftNumberField
-                      id={priceId}
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      scale={100}
-                      min={0}
-                      step={1}
-                      invalid={!!errors.priceCents}
-                      errorId={errors.priceCents ? priceErrorId : undefined}
-                      className="h-10"
-                    />
+                    <ProductImageField storeId={storeId} path={field.value} onChange={field.onChange} />
                   )}
                 />
-                {errors.priceCents ? (
-                  <p id={priceErrorId} role="alert" className="text-destructive text-xs">
-                    {errors.priceCents.message}
+              </div>
+
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={nameId}>Nombre</Label>
+                  <Input
+                    id={nameId}
+                    {...register('name')}
+                    aria-invalid={!!errors.name}
+                    aria-describedby={errors.name ? nameErrorId : undefined}
+                    className="h-10"
+                  />
+                  {errors.name ? (
+                    <p id={nameErrorId} role="alert" className="text-destructive text-xs">
+                      {errors.name.message}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={descId}>Descripción</Label>
+                  <Textarea
+                    id={descId}
+                    {...register('description', { setValueAs: (v: string) => (v.trim() === '' ? null : v) })}
+                    rows={2}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={categorySelectId}>Categoría</Label>
+                  <Controller
+                    control={control}
+                    name="categoryId"
+                    render={({ field }) => (
+                      <Select
+                        value={field.value === null ? 'none' : String(field.value)}
+                        onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}
+                      >
+                        <SelectTrigger id={categorySelectId} className="h-10 w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Sin categoría</SelectItem>
+                          {categories.map((category) => (
+                            <SelectItem key={category.id} value={String(category.id)}>
+                              {category.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={priceId}>Precio</Label>
+                    <Controller
+                      control={control}
+                      name="priceCents"
+                      render={({ field }) => (
+                        <DraftNumberField
+                          id={priceId}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          scale={100}
+                          min={0}
+                          step={1}
+                          invalid={!!errors.priceCents}
+                          errorId={errors.priceCents ? priceErrorId : undefined}
+                          className="h-10"
+                        />
+                      )}
+                    />
+                    {errors.priceCents ? (
+                      <p id={priceErrorId} role="alert" className="text-destructive text-xs">
+                        {errors.priceCents.message}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={prepId}>Minutos de preparación</Label>
+                    <Controller
+                      control={control}
+                      name="prepMinutes"
+                      render={({ field }) => (
+                        <DraftNumberField
+                          id={prepId}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          min={0}
+                          max={240}
+                          step={1}
+                          invalid={!!errors.prepMinutes}
+                          errorId={errors.prepMinutes ? prepErrorId : undefined}
+                          className="h-10"
+                        />
+                      )}
+                    />
+                    {errors.prepMinutes ? (
+                      <p id={prepErrorId} role="alert" className="text-destructive text-xs">
+                        {errors.prepMinutes.message}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+
+                {/* Botón real de tamaño táctil (44px, F-04): el Checkbox de Radix no es un
+                    input nativo, así que un <label> alrededor no lo activa al hacer click
+                    en el texto. Acá el botón entero es el control; el Checkbox de adentro
+                    es solo el indicador visual. */}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setValue('isAvailable', !isAvailable, { shouldValidate: true })}
+                  aria-pressed={isAvailable}
+                  className="flex h-11 w-fit items-center justify-start gap-2 px-2"
+                >
+                  <Checkbox checked={isAvailable} onCheckedChange={() => {}} tabIndex={-1} className="pointer-events-none" />
+                  <span className="text-sm font-normal">Disponible para pedir</span>
+                </Button>
+
+                {errors.root ? (
+                  <p id={rootErrorId} role="alert" className="text-destructive text-sm">
+                    {errors.root.message}
                   </p>
                 ) : null}
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={prepId}>Minutos de preparación</Label>
-                <Controller
-                  control={control}
-                  name="prepMinutes"
-                  render={({ field }) => (
-                    <DraftNumberField
-                      id={prepId}
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      min={0}
-                      max={240}
-                      step={1}
-                      invalid={!!errors.prepMinutes}
-                      errorId={errors.prepMinutes ? prepErrorId : undefined}
-                      className="h-10"
-                    />
-                  )}
-                />
-                {errors.prepMinutes ? (
-                  <p id={prepErrorId} role="alert" className="text-destructive text-xs">
-                    {errors.prepMinutes.message}
-                  </p>
-                ) : null}
-              </div>
             </div>
-
-            {/* Botón real de tamaño táctil (44px, F-04): el Checkbox de Radix no es un
-                input nativo, así que un <label> alrededor no lo activa al hacer click
-                en el texto. Acá el botón entero es el control; el Checkbox de adentro
-                es solo el indicador visual. */}
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setValue('isAvailable', !isAvailable, { shouldValidate: true })}
-              aria-pressed={isAvailable}
-              className="flex h-11 w-fit items-center justify-start gap-2 px-2"
-            >
-              <Checkbox checked={isAvailable} onCheckedChange={() => {}} tabIndex={-1} className="pointer-events-none" />
-              <span className="text-sm font-normal">Disponible para pedir</span>
-            </Button>
-
-            {errors.root ? (
-              <p id={rootErrorId} role="alert" className="text-destructive text-sm">
-                {errors.root.message}
-              </p>
-            ) : null}
           </form>
 
           <div className="border-border border-t pt-4 pb-6">

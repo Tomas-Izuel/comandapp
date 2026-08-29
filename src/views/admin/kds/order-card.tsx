@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useTransition } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, Banknote, Loader2, MessageCircle, Undo2, X } from 'lucide-react'
+import { useDraggable } from '@dnd-kit/core'
+import { AlertTriangle, Banknote, Bike, Bot, Loader2, MessageCircle, Undo2, X } from 'lucide-react'
 import { Panel, StatusPill } from '@/views/shared/surfaces'
 import { PaymentNotice } from '@/views/shared/order-status'
 import { Button } from '@/components/ui/button'
@@ -21,23 +22,34 @@ import { isConflict } from '@/lib/conflict'
 import { markPaidInStoreAction } from '@/controllers/kitchen.actions'
 import { ALLOWED_TRANSITIONS } from '@/models/schemas/order.schema'
 import type { ActionResult, Order, OrderStatus } from '@/models/types'
+import { AssignCourier } from './assign-courier'
 
 /**
  * Orden "natural" de la cocina, solo para decidir si una transición legal es
  * un paso ADELANTE o un paso ATRÁS — la legalidad en sí la decide siempre
  * `ALLOWED_TRANSITIONS`, importado de `order.schema.ts`, nunca redeclarado acá.
+ *
+ * `on_the_way` entra ACÁ entre `ready` y `delivered`, pero eso NO alcanza para
+ * que `ready` calcule bien su botón de avance: `ready` es la única fila de
+ * `ALLOWED_TRANSITIONS` con DOS objetivos "adelante" (`delivered` y
+ * `on_the_way`), y cuál corresponde depende de si el pedido es delivery y si
+ * ya tiene repartidor — algo que este array no sabe. Por eso `forwardTarget`
+ * más abajo trata `ready` como caso especial y no delega en este orden para
+ * ese estado puntual.
  */
-const KITCHEN_ORDER: readonly OrderStatus[] = ['confirmed', 'preparing', 'ready', 'delivered']
+const KITCHEN_ORDER: readonly OrderStatus[] = ['confirmed', 'preparing', 'ready', 'on_the_way', 'delivered']
 
 const FORWARD_ACTION_LABEL: Partial<Record<OrderStatus, string>> = {
   preparing: 'Empezar a cocinar',
   ready: 'Marcar listo',
+  on_the_way: 'Salió a repartir',
   delivered: 'Entregar',
 }
 
 const BACK_ACTION_LABEL: Partial<Record<OrderStatus, string>> = {
   confirmed: 'Volver a confirmado',
   preparing: 'Volver a la plancha',
+  ready: 'Volver a listo',
 }
 
 /** Lo que le importa a esta tarjeta del resultado de un cambio de estado. */
@@ -65,6 +77,9 @@ export function OrderCard({
   onChangeStatus,
   onOrderChanged,
   onRefreshNeeded,
+  dragEnabled = false,
+  movedBySystem = false,
+  justReturned = false,
 }: {
   order: Order
   storeId: number
@@ -74,12 +89,34 @@ export function OrderCard({
   onChangeStatus: (order: Order, target: OrderStatus) => Promise<StatusChangeResult>
   onOrderChanged: (updated: Order) => void
   onRefreshNeeded: () => void
+  /** Solo `≥lg`: el tablero decide (media query) si el arrastre está habilitado. */
+  dragEnabled?: boolean
+  /** La movió una automatización de la tienda (`auto_start_orders`/`auto_ready_orders`), no un operario. */
+  movedBySystem?: boolean
+  /** El servidor rechazó el último drop: la tarjeta vuelve a su columna animada, no de un salto. */
+  justReturned?: boolean
 }) {
   const [markPaidPending, startMarkPaidTransition] = useTransition()
   const pending = statusPending || markPaidPending
   const [waLink, setWaLink] = useState<string | null>(null)
   const [cancelOpen, setCancelOpen] = useState(false)
   const elapsed = useElapsedMinutes(order.confirmedAt ?? order.createdAt)
+
+  /**
+   * `disabled` en vez de no montar el hook: las reglas de hooks piden llamarlo
+   * siempre, y alternar `disabled` es la forma que ofrece dnd-kit de prender y
+   * apagar el arrastre según el breakpoint sin desmontar la tarjeta.
+   */
+  // Sin `attributes`: dnd-kit los usa para anunciar `role="button" tabIndex={0}`
+  // pensado para el arrastre por TECLADO. Acá el camino de teclado son los
+  // botones de abajo (solo `PointerSensor` está configurado en el tablero), así
+  // que sumar esos atributos dejaría un foco fantasma que Enter/Space no hacen
+  // nada — peor que no ofrecer el atajo.
+  const { listeners, setNodeRef, isDragging } = useDraggable({
+    id: order.id,
+    data: { status: order.status },
+    disabled: !dragEnabled || pending,
+  })
 
   const unpaidInStore = order.paymentMethod === 'in_store' && order.paymentStatus !== 'approved'
   const blockedByPayment = order.status === 'ready' && unpaidInStore
@@ -93,13 +130,26 @@ export function OrderCard({
   const itemCount = order.items.reduce((n, i) => n + i.quantity, 0)
 
   const legalTargets = ALLOWED_TRANSITIONS[order.status]
-  const forwardTarget = legalTargets.find(
-    (t) => t !== 'cancelled' && KITCHEN_ORDER.indexOf(t) > KITCHEN_ORDER.indexOf(order.status),
-  )
+  // `ready` es la única fila con dos objetivos "adelante" (`delivered` y
+  // `on_the_way`) y el `.find()` genérico no sabe cuál corresponde: un pedido
+  // de RETIRO nunca puede salir a repartir, y uno de DELIVERY sin repartidor
+  // asignado tampoco (el trigger de Postgres lo rechaza con 500 si se lo
+  // dejamos ofrecer). Por eso este único estado se calcula aparte; todo el
+  // resto sigue el orden genérico de `KITCHEN_ORDER`.
+  const forwardTarget: OrderStatus | undefined =
+    order.status === 'ready' && order.deliveryMethod === 'delivery'
+      ? order.courierId != null
+        ? 'on_the_way'
+        : undefined
+      : legalTargets.find(
+          (t) => t !== 'cancelled' && KITCHEN_ORDER.indexOf(t) > KITCHEN_ORDER.indexOf(order.status),
+        )
   const backTarget = legalTargets.find(
     (t) => t !== 'cancelled' && KITCHEN_ORDER.indexOf(t) < KITCHEN_ORDER.indexOf(order.status),
   )
   const canCancel = legalTargets.includes('cancelled')
+  /** El pedido que más importa de todo el tablero: listo, es delivery, y nadie lo va a llevar. */
+  const needsCourier = order.status === 'ready' && order.deliveryMethod === 'delivery' && order.courierId == null
 
   /**
    * Un conflicto (409: otro operario cambió el pedido primero) no es un error
@@ -140,36 +190,83 @@ export function OrderCard({
   }
 
   return (
-    <Panel className={cn('flex flex-col gap-0 overflow-hidden p-0', urgent && 'border-destructive/60')}>
+    <Panel
+      ref={setNodeRef}
+      style={dragEnabled ? { touchAction: 'none' } : undefined}
+      {...(dragEnabled ? listeners : null)}
+      className={cn(
+        'flex flex-col gap-0 overflow-hidden p-0 transition-opacity duration-(--dur-fast)',
+        urgent && 'border-destructive/60',
+        isDragging && 'opacity-40',
+        justReturned && 'animate-in fade-in-0 zoom-in-95 duration-(--dur-base)',
+        dragEnabled && 'lg:cursor-grab lg:active:cursor-grabbing',
+      )}
+    >
       {urgent ? (
-        <div className="bg-destructive/12 text-destructive flex items-center gap-1.5 border-b border-destructive/25 px-4 py-1.5 text-xs font-semibold">
+        <div className="bg-destructive/12 text-destructive flex items-center gap-1.5 border-b border-destructive/25 px-4 py-1.5 text-xs font-semibold lg:text-sm">
           <AlertTriangle className="size-3.5 shrink-0" aria-hidden />
           Pasó el tiempo estimado
         </div>
       ) : null}
 
       <div className="flex items-start justify-between gap-3 px-4 pt-3.5">
-        <span className="text-xl leading-none font-bold">{order.shortCode || `#${order.id}`}</span>
+        <span className="text-xl leading-none font-bold lg:text-2xl">{order.shortCode || `#${order.id}`}</span>
         {urgent ? (
-          <span suppressHydrationWarning className="tabular text-destructive shrink-0 text-sm font-bold">
+          <span suppressHydrationWarning className="tabular text-destructive shrink-0 text-sm font-bold lg:text-base">
             hace {elapsed} min
           </span>
         ) : (
           <StatusPill tone="neutral" className="shrink-0">
-            <span suppressHydrationWarning className="tabular">
+            <span suppressHydrationWarning className="tabular lg:text-sm">
               hace {elapsed} min
             </span>
           </StatusPill>
         )}
       </div>
 
-      <div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 px-4 pt-2 text-xs">
+      <div className="text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1 px-4 pt-2 text-xs">
         <span className="min-w-0 truncate">{order.customerName}</span>
         <span className="tabular shrink-0">
           {itemCount} {itemCount === 1 ? 'ítem' : 'ítems'}
         </span>
         {order.etaAt ? <span className="tabular shrink-0">Listo ~{formatTime(order.etaAt, timezone)}</span> : null}
+        {movedBySystem ? (
+          <span className="border-border bg-muted text-muted-foreground inline-flex shrink-0 items-center gap-1 rounded-pill border px-2 py-0.5 font-medium">
+            <Bot className="size-3" aria-hidden />
+            Lo movió el sistema
+          </span>
+        ) : null}
+        {order.deliveryMethod === 'delivery' && order.courierName ? (
+          <span className="border-border bg-muted text-muted-foreground inline-flex shrink-0 items-center gap-1 rounded-pill border px-2 py-0.5 font-medium">
+            <Bike className="size-3" aria-hidden />
+            {order.courierName}
+          </span>
+        ) : null}
       </div>
+
+      {/*
+        Delivery vs. retiro se distingue de un vistazo por la PRESENCIA de este
+        bloque, no por un color: un pedido de retiro no muestra nada acá. El
+        piso (`unit`) va en su propia línea y con más peso — es lo que hace
+        perder diez minutos en la puerta si no se lee antes de salir.
+      */}
+      {order.deliveryMethod === 'delivery' && order.deliveryAddress ? (
+        <div className="bg-muted/50 mx-4 mt-2.5 flex items-start gap-2 rounded-lg px-3 py-2.5 text-sm">
+          <Bike className="text-muted-foreground mt-0.5 size-4 shrink-0" aria-hidden />
+          <div className="min-w-0">
+            <p className="font-semibold">{order.deliveryAddress.line}</p>
+            {order.deliveryAddress.unit ? (
+              <p className="text-primary text-sm font-bold">{order.deliveryAddress.unit}</p>
+            ) : null}
+            {order.deliveryAddress.between ? (
+              <p className="text-muted-foreground text-xs">Entre {order.deliveryAddress.between}</p>
+            ) : null}
+            {order.deliveryAddress.notes ? (
+              <p className="text-muted-foreground text-xs italic">{order.deliveryAddress.notes}</p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <ul className="divide-border divide-y px-4 pt-2.5">
         {order.items.map((item) => (
@@ -220,6 +317,15 @@ export function OrderCard({
                 Marcar como cobrado
               </Button>
             ) : null}
+            {needsCourier ? (
+              // El pedido que más importa del tablero: listo, es delivery, y
+              // nadie lo va a llevar. Sin botón de avance a propósito — el
+              // trigger de Postgres lo rechazaría — así que lo que hay que
+              // VER acá es que falta asignar, no un botón deshabilitado mudo.
+              <p className="bg-warning/20 text-warning-foreground rounded-lg px-3 py-2.5 text-center text-sm font-semibold">
+                Asigná un repartidor para salir a repartir
+              </p>
+            ) : null}
             {forwardTarget ? (
               <Button onClick={() => changeStatus(forwardTarget)} disabled={pending} className="h-12 w-full text-base">
                 {pending ? <Loader2 className="size-4 animate-spin" /> : FORWARD_ACTION_LABEL[forwardTarget]}
@@ -227,6 +333,16 @@ export function OrderCard({
             ) : null}
           </>
         )}
+
+        {order.deliveryMethod === 'delivery' ? (
+          <AssignCourier
+            order={order}
+            storeId={storeId}
+            disabled={pending}
+            onAssigned={(patch) => onOrderChanged({ ...order, courierId: patch.courierId, courierName: patch.courierName })}
+            onRefreshNeeded={onRefreshNeeded}
+          />
+        ) : null}
 
         {backTarget || canCancel ? (
           <div className="flex items-center justify-between gap-2 pt-1">

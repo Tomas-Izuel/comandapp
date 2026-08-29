@@ -7,7 +7,7 @@ import 'server-only'
  * adapters detrás de la misma interfaz, elegidos por `WHATSAPP_PROVIDER`.
  */
 
-export type NotificationTemplate = 'order_confirmed' | 'order_ready' | 'order_cancelled'
+export type NotificationTemplate = 'order_confirmed' | 'order_ready' | 'order_cancelled' | 'order_on_the_way'
 
 export type NotificationResult = {
   status: 'sent' | 'queued' | 'failed' | 'skipped'

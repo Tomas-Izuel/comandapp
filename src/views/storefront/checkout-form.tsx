@@ -3,7 +3,7 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { CircleAlert, Loader2, X } from 'lucide-react'
+import { CircleAlert, Info, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -12,21 +12,26 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Price } from '@/views/shared/money'
 import { EmptyState } from '@/views/shared/states'
-import { ActionBar } from '@/views/shared/surfaces'
+import { ActionBar, Panel } from '@/views/shared/surfaces'
 import { useCart, saveOrderRef } from '@/lib/cart'
 import { getSavedCustomer, saveCustomer, clearSavedCustomer } from '@/lib/customer'
 import { useCheckoutQuote } from '@/views/storefront/use-priced-cart'
 import { formatCentsCompact } from '@/lib/money'
-import type { PaymentMethod } from '@/models/schemas/order.schema'
+import { usePreviewMode } from '@/lib/preview-mode'
+import { cn } from '@/lib/utils'
+import type { PaymentMethod, DeliveryMethod } from '@/models/schemas/order.schema'
 
 /**
- * El paso donde se decide de verdad. La cotización (`useCheckoutQuote`)
- * revalida el carrito contra la base y muestra el ETA ANTES del método de
- * pago — divulgación honesta, nunca una sorpresa post-cobro.
+ * El paso donde se decide de verdad. Operate: cada bloque es su propia
+ * tarjeta —datos, cómo lo recibís, pedido, pago— para que se pueda barrer
+ * con el pulgar y volver a uno solo sin perder los demás.
  *
- * Todo pedido es retiro en el local: no hay elección de entrega ni dirección
- * del cliente que pedir. Lo que sí hace falta es que el cliente sepa
- * DÓNDE retirar, así que se muestra la dirección del local (`storeAddress`).
+ * La cotización (`useCheckoutQuote`) revalida el carrito contra la base y
+ * muestra el ETA ANTES del método de pago — divulgación honesta, nunca una
+ * sorpresa post-cobro. La misma respuesta trae `delivery`: el costo, el
+ * mínimo y la disponibilidad del envío YA calculados contra la config de la
+ * tienda. El browser no suma nada — ni plata ni minutos — solo elige cuál de
+ * los dos totales/ETA mostrar según el método que el cliente marcó.
  */
 export function CheckoutForm({
   storeSlug,
@@ -41,12 +46,24 @@ export function CheckoutForm({
 }) {
   const router = useRouter()
   const { lines, hydrated, ensureIdempotencyKey } = useCart()
+  // Vista previa embebida desde `/admin/apariencia` (?preview=brand): el
+  // único punto donde el pedido se crea DE VERDAD es este submit, así que la
+  // guarda va acá — un solo lugar, no un botón deshabilitado por página.
+  // Todo lo demás (navegar, abrir un producto, elegir opciones, agregar al
+  // carrito) sigue andando: el pedido del dueño real, no el de la vista
+  // previa, es lo único que no puede pasar.
+  const isPreview = usePreviewMode()
 
   const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>('online')
   const [customerName, setCustomerName] = React.useState('')
   const [customerPhone, setCustomerPhone] = React.useState('')
   const [customerEmail, setCustomerEmail] = React.useState('')
   const [notes, setNotes] = React.useState('')
+  const [deliveryMethod, setDeliveryMethod] = React.useState<DeliveryMethod>('pickup')
+  const [deliveryAddressLine, setDeliveryAddressLine] = React.useState('')
+  const [deliveryAddressUnit, setDeliveryAddressUnit] = React.useState('')
+  const [deliveryAddressBetween, setDeliveryAddressBetween] = React.useState('')
+  const [deliveryAddressNotes, setDeliveryAddressNotes] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
   const [formError, setFormError] = React.useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({})
@@ -58,15 +75,20 @@ export function CheckoutForm({
   const nameRef = React.useRef<HTMLInputElement>(null)
   const phoneRef = React.useRef<HTMLInputElement>(null)
   const emailRef = React.useRef<HTMLInputElement>(null)
+  const deliveryLineRef = React.useRef<HTMLInputElement>(null)
   const fieldRefs: Record<string, React.RefObject<HTMLInputElement | null>> = {
     customerName: nameRef,
     customerPhone: phoneRef,
     customerEmail: emailRef,
+    deliveryAddressLine: deliveryLineRef,
   }
 
   // Memoria de contacto: si el cliente ya pidió una vez, no le volvemos a
   // pedir sus datos. Se lee después del primer render (recién ahí existe
-  // `window`) para no pisar el HTML hidratado con contenido distinto.
+  // `window`) para no pisar el HTML hidratado con contenido distinto. La
+  // dirección de delivery se precarga igual, aunque el método arranque
+  // siempre en 'pickup': si el cliente cambia a delivery, los campos ya
+  // están completos en vez de en blanco.
   React.useEffect(() => {
     const saved = getSavedCustomer()
     if (!saved) return
@@ -74,6 +96,10 @@ export function CheckoutForm({
     if (saved.name) setCustomerName(saved.name)
     if (saved.phone) setCustomerPhone(saved.phone)
     if (saved.email) setCustomerEmail(saved.email)
+    if (saved.deliveryAddressLine) setDeliveryAddressLine(saved.deliveryAddressLine)
+    if (saved.deliveryAddressUnit) setDeliveryAddressUnit(saved.deliveryAddressUnit)
+    if (saved.deliveryAddressBetween) setDeliveryAddressBetween(saved.deliveryAddressBetween)
+    if (saved.deliveryAddressNotes) setDeliveryAddressNotes(saved.deliveryAddressNotes)
     setRememberedContact(true)
   }, [])
 
@@ -82,10 +108,24 @@ export function CheckoutForm({
     setCustomerName('')
     setCustomerPhone('')
     setCustomerEmail('')
+    setDeliveryAddressLine('')
+    setDeliveryAddressUnit('')
+    setDeliveryAddressBetween('')
+    setDeliveryAddressNotes('')
     setRememberedContact(false)
   }
 
   const quote = useCheckoutQuote(storeSlug, hydrated ? lines : [])
+  const delivery = quote.status === 'ready' ? quote.data.delivery : null
+
+  // Derivado, no sincronizado con un efecto: si el envío deja de estar
+  // disponible (o de estar habilitado) mientras estaba elegido —la
+  // cotización se refresca y la config de la tienda cambió, o todos los
+  // repartidores se dieron de baja— se lo trata como retiro para mostrar y
+  // para mandar, sin esperar un render extra ni tocar el estado que el
+  // cliente sí controló con el radio.
+  const effectiveDeliveryMethod: DeliveryMethod =
+    deliveryMethod === 'delivery' && (!delivery || !delivery.enabled || !delivery.available) ? 'pickup' : deliveryMethod
 
   if (!hydrated) return null
 
@@ -96,7 +136,7 @@ export function CheckoutForm({
         title="Tu carrito está vacío"
         description="Agregá algo de la carta antes de pasar al checkout."
         action={
-          <Button asChild size="lg" className="h-11">
+          <Button asChild size="lg" className="h-11 rounded-pill">
             <Link href={`/${storeSlug}`}>Ver la carta</Link>
           </Button>
         }
@@ -110,6 +150,10 @@ export function CheckoutForm({
     event.preventDefault()
     setFormError(null)
     setFieldErrors({})
+
+    // Barrera real, no solo cosmética: el botón ya llega `disabled`, pero un
+    // `submit` disparado por Enter en un campo de texto no pasa por el botón.
+    if (isPreview) return
 
     if (quote.status !== 'ready') return
 
@@ -137,6 +181,15 @@ export function CheckoutForm({
           customerPhone,
           customerEmail: customerEmail.trim() || undefined,
           notes: notes.trim() || undefined,
+          deliveryMethod: effectiveDeliveryMethod,
+          // Solo viajan si el método es delivery: en un retiro no hay
+          // dirección que mandar, y `undefined` (no `''`) para lo que quedó
+          // en blanco es lo que `optionalText` de `createOrderSchema` espera
+          // para tratarlo como ausente.
+          deliveryAddressLine: effectiveDeliveryMethod === 'delivery' ? deliveryAddressLine.trim() || undefined : undefined,
+          deliveryAddressUnit: effectiveDeliveryMethod === 'delivery' ? deliveryAddressUnit.trim() || undefined : undefined,
+          deliveryAddressBetween: effectiveDeliveryMethod === 'delivery' ? deliveryAddressBetween.trim() || undefined : undefined,
+          deliveryAddressNotes: effectiveDeliveryMethod === 'delivery' ? deliveryAddressNotes.trim() || undefined : undefined,
         }),
       })
       const body = await res.json()
@@ -158,6 +211,14 @@ export function CheckoutForm({
         name: customerName.trim() || undefined,
         phone: customerPhone.trim() || undefined,
         email: customerEmail.trim() || undefined,
+        ...(effectiveDeliveryMethod === 'delivery'
+          ? {
+              deliveryAddressLine: deliveryAddressLine.trim() || undefined,
+              deliveryAddressUnit: deliveryAddressUnit.trim() || undefined,
+              deliveryAddressBetween: deliveryAddressBetween.trim() || undefined,
+              deliveryAddressNotes: deliveryAddressNotes.trim() || undefined,
+            }
+          : {}),
       })
 
       // A propósito NO se vacía el carrito acá (F-01 de la auditoría). Si la
@@ -184,10 +245,10 @@ export function CheckoutForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-1 flex-col gap-8 px-5 pt-8 pb-44 sm:px-8">
-      <h1 className="display text-2xl uppercase">Checkout</h1>
+    <form onSubmit={handleSubmit} className="mx-auto flex w-full max-w-(--content-max) flex-1 flex-col gap-4 px-4 pt-6 pb-48 sm:px-6">
+      <h1 className="display text-foreground text-2xl font-semibold sm:text-3xl">Checkout</h1>
 
-      <section className="flex flex-col gap-3">
+      <Panel className="flex flex-col gap-3 p-4 sm:p-5">
         <div className="flex items-baseline justify-between gap-3">
           <h2 className="text-sm font-semibold">Tus datos</h2>
           {rememberedContact ? (
@@ -273,20 +334,146 @@ export function CheckoutForm({
             </p>
           ) : null}
         </div>
-      </section>
+      </Panel>
 
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-semibold">Dónde retirás</h2>
-        {storeAddress ? (
+      <Panel className="flex flex-col gap-3 p-4 sm:p-5">
+        <h2 className="text-sm font-semibold">Cómo lo recibís</h2>
+        {delivery && delivery.enabled ? (
+          <>
+            <RadioGroup value={effectiveDeliveryMethod} onValueChange={(value) => setDeliveryMethod(value as DeliveryMethod)}>
+              <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
+                <span className="flex items-center gap-2.5">
+                  <RadioGroupItem value="pickup" />
+                  Retiro en el local
+                </span>
+                <span className="text-muted-foreground pl-6 text-xs">
+                  {storeAddress ?? 'Te confirmamos la dirección del local en el comprobante que te mandamos por WhatsApp.'}
+                </span>
+              </Label>
+
+              {/* Deshabilitada (no oculta) cuando `!available`: el motivo ya
+                  viene redactado del servidor (`unavailableReason`), se
+                  muestra tal cual. `allCouriersBusy` es otra cosa —AVISA, no
+                  bloquea— así que nunca deshabilita esta opción. */}
+              <Label
+                aria-disabled={!delivery.available}
+                className={cn(
+                  'border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)',
+                  !delivery.available && 'opacity-45',
+                )}
+              >
+                <span className="flex items-center gap-2.5">
+                  <RadioGroupItem value="delivery" disabled={!delivery.available} />
+                  Delivery
+                </span>
+                <span className="text-muted-foreground pl-6 text-xs">
+                  {delivery.available ? (
+                    delivery.feeCents === 0 ? (
+                      'Gratis'
+                    ) : (
+                      <>
+                        Costo de envío: <Price cents={delivery.feeCents} currency={currency} className="tabular" />
+                      </>
+                    )
+                  ) : (
+                    delivery.unavailableReason
+                  )}
+                </span>
+              </Label>
+            </RadioGroup>
+
+            {effectiveDeliveryMethod === 'delivery' && delivery.available ? (
+              <div className="flex flex-col gap-3 pt-1">
+                {delivery.allCouriersBusy ? (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="bg-warning/20 text-warning-foreground flex items-start gap-2 rounded-(--radius-md) px-3 py-2.5 text-xs"
+                  >
+                    <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+                    <span>Todos los repartidores están en la calle. Tu envío puede demorar más de lo habitual.</span>
+                  </div>
+                ) : null}
+                {delivery.missingForFreeCents > 0 && delivery.freeFromCents > 0 ? (
+                  <p className="text-muted-foreground text-xs">
+                    Te faltan <Price cents={delivery.missingForFreeCents} currency={currency} className="tabular" /> para el envío
+                    gratis.
+                  </p>
+                ) : null}
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="deliveryAddressLine">Calle y número</Label>
+                  <Input
+                    id="deliveryAddressLine"
+                    name="deliveryAddressLine"
+                    ref={deliveryLineRef}
+                    required
+                    autoComplete="street-address"
+                    value={deliveryAddressLine}
+                    onChange={(event) => setDeliveryAddressLine(event.target.value)}
+                    placeholder="Av. Siempre Viva 742"
+                    aria-invalid={!!fieldErrors.deliveryAddressLine}
+                    aria-describedby={fieldErrors.deliveryAddressLine ? 'deliveryAddressLine-error' : undefined}
+                  />
+                  {fieldErrors.deliveryAddressLine ? (
+                    <p id="deliveryAddressLine-error" className="text-destructive text-xs">
+                      {fieldErrors.deliveryAddressLine}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="deliveryAddressUnit">
+                    Piso / Depto <span className="text-muted-foreground font-normal">(opcional)</span>
+                  </Label>
+                  <Input
+                    id="deliveryAddressUnit"
+                    name="deliveryAddressUnit"
+                    autoComplete="address-line2"
+                    value={deliveryAddressUnit}
+                    onChange={(event) => setDeliveryAddressUnit(event.target.value)}
+                    placeholder="3.º B"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="deliveryAddressBetween">
+                    Entre calles <span className="text-muted-foreground font-normal">(opcional)</span>
+                  </Label>
+                  <Input
+                    id="deliveryAddressBetween"
+                    name="deliveryAddressBetween"
+                    value={deliveryAddressBetween}
+                    onChange={(event) => setDeliveryAddressBetween(event.target.value)}
+                    placeholder="Entre San Martín y Belgrano"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="deliveryAddressNotes">
+                    Referencias <span className="text-muted-foreground font-normal">(opcional)</span>
+                  </Label>
+                  <Textarea
+                    id="deliveryAddressNotes"
+                    value={deliveryAddressNotes}
+                    onChange={(event) => setDeliveryAddressNotes(event.target.value)}
+                    maxLength={300}
+                    placeholder="Portón negro, timbre 2"
+                  />
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : storeAddress ? (
           <p className="text-sm">{storeAddress}</p>
         ) : (
           <p className="text-muted-foreground text-sm">
             Te confirmamos la dirección del local en el comprobante que te mandamos por WhatsApp.
           </p>
         )}
-      </section>
+      </Panel>
 
-      <section className="flex flex-col gap-3">
+      <Panel className="flex flex-col gap-2 p-4 sm:p-5">
         <h2 className="text-sm font-semibold">Tu pedido</h2>
         {quote.status === 'loading' ? (
           <p className="text-muted-foreground text-sm">Calculando el total…</p>
@@ -301,30 +488,46 @@ export function CheckoutForm({
               <span className="text-muted-foreground">Subtotal</span>
               <Price cents={quote.data.priced.subtotalCents} currency={currency} className="tabular" />
             </div>
+            {effectiveDeliveryMethod === 'delivery' ? (
+              <div className="flex items-baseline justify-between">
+                <span className="text-muted-foreground">Envío</span>
+                {quote.data.delivery.feeCents === 0 ? (
+                  <span className="tabular">Gratis</span>
+                ) : (
+                  <Price cents={quote.data.delivery.feeCents} currency={currency} className="tabular" />
+                )}
+              </div>
+            ) : null}
             <div className="border-border flex items-baseline justify-between border-t pt-1.5 text-base font-medium">
               <span>Total</span>
-              <Price cents={quote.data.priced.totalCents} currency={currency} exact className="tabular" />
+              <Price
+                cents={effectiveDeliveryMethod === 'delivery' ? quote.data.delivery.totalWithDeliveryCents : quote.data.priced.totalCents}
+                currency={currency}
+                exact
+                className="tabular"
+              />
             </div>
-            <p className="text-muted-foreground mt-2 text-xs uppercase tracking-[0.08em]">
-              Listo en {quote.data.eta.etaMinutes}&nbsp;min aprox.
+            <p className="text-muted-foreground mt-2 text-xs">
+              Listo en {quote.data.eta.etaMinutes + (effectiveDeliveryMethod === 'delivery' ? quote.data.delivery.minutesToAdd : 0)}
+              &nbsp;min aprox.
               {quote.data.eta.isBusy ? ' — hay mucha demanda ahora' : ''}
             </p>
           </div>
         )}
-      </section>
+      </Panel>
 
       {inStorePaymentEnabled ? (
-        <section className="flex flex-col gap-3">
+        <Panel className="flex flex-col gap-3 p-4 sm:p-5">
           <h2 className="text-sm font-semibold">Cómo pagás</h2>
           <RadioGroup value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as PaymentMethod)}>
-            <Label className="border-border flex flex-col items-start gap-1 rounded-lg border px-3 py-2.5 font-normal">
+            <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
               <span className="flex items-center gap-2.5">
                 <RadioGroupItem value="online" />
                 Pagar ahora online
               </span>
               <span className="text-muted-foreground pl-6 text-xs">Con Mercado Pago, antes de que se prepare.</span>
             </Label>
-            <Label className="border-border flex flex-col items-start gap-1 rounded-lg border px-3 py-2.5 font-normal">
+            <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
               <span className="flex items-center gap-2.5">
                 <RadioGroupItem value="in_store" />
                 Pagar al retirar
@@ -332,15 +535,15 @@ export function CheckoutForm({
               <span className="text-muted-foreground pl-6 text-xs">Reservás el pedido ahora y pagás en el local.</span>
             </Label>
           </RadioGroup>
-        </section>
+        </Panel>
       ) : (
-        <p className="text-muted-foreground text-sm">Pagás online con Mercado Pago en el siguiente paso.</p>
+        <p className="text-muted-foreground px-1 text-sm">Pagás online con Mercado Pago en el siguiente paso.</p>
       )}
 
-      <section className="flex flex-col gap-1.5">
+      <Panel className="flex flex-col gap-1.5 p-4 sm:p-5">
         <Label htmlFor="orderNotes">Aclaraciones para el pedido (opcional)</Label>
         <Textarea id="orderNotes" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={400} />
-      </section>
+      </Panel>
 
       {/* Total + acción primaria fijos al pie: en esta categoría no se busca
           scrolleando, vive donde está el pulgar. El error de un intento
@@ -349,7 +552,12 @@ export function CheckoutForm({
           MISMA idempotencyKey (`ensureIdempotencyKey`), así que un doble tap
           por mala señal nunca crea un segundo pedido. */}
       <ActionBar>
-        {formError ? (
+        {isPreview ? (
+          <Alert className="mb-3">
+            <CircleAlert />
+            <AlertDescription>Vista previa — desde acá no se puede pedir.</AlertDescription>
+          </Alert>
+        ) : formError ? (
           <Alert variant="destructive" className="mb-3">
             <CircleAlert />
             <AlertDescription>{formError}</AlertDescription>
@@ -363,16 +571,24 @@ export function CheckoutForm({
           {quote.status === 'ready' ? (
             <div className="flex flex-col leading-tight">
               <span className="text-muted-foreground text-xs">Total</span>
-              <Price cents={quote.data.priced.totalCents} currency={currency} exact className="tabular text-lg font-semibold" />
+              <Price
+                cents={effectiveDeliveryMethod === 'delivery' ? quote.data.delivery.totalWithDeliveryCents : quote.data.priced.totalCents}
+                currency={currency}
+                exact
+                className="tabular text-lg font-semibold"
+              />
             </div>
           ) : null}
           <Button
             type="submit"
             size="lg"
-            className="h-12 flex-1 text-base"
-            disabled={submitting || quote.status !== 'ready' || belowMinimum}
+            className="h-12 flex-1 rounded-pill text-base"
+            disabled={isPreview || submitting || quote.status !== 'ready' || belowMinimum}
+            aria-disabled={isPreview}
           >
-            {submitting ? (
+            {isPreview ? (
+              'No disponible en la vista previa'
+            ) : submitting ? (
               <>
                 <Loader2 className="size-4 animate-spin" aria-hidden />
                 Confirmando…

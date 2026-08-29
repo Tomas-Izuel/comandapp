@@ -59,6 +59,19 @@ const serverSchema = z.object({
   RESEND_FROM_NAME: z.string().default('Pedidos'),
 
   /**
+   * A dónde llegan los pedidos de soporte que manda el dueño desde
+   * `/admin/pagos`. Conectar Mercado Pago es la parte del alta que más se
+   * traba —hay que sacar credenciales de producción del panel de MP, que no
+   * es obvio— y sin este botón el dueño se queda mirando un formulario que no
+   * puede completar.
+   *
+   * Tiene default para que el botón funcione en cualquier entorno sin
+   * configurar nada, pero es una variable y no una constante en el código
+   * porque el día que soporte lo atienda otra persona no se toca el repo.
+   */
+  SUPPORT_EMAIL: z.string().default('tomasizuel@gmail.com'),
+
+  /**
    * "Continuar con Google" del backoffice de plataforma. Opcional: sin esto
    * configurado, el login por contraseña + TOTP tiene que seguir andando
    * solo, y el botón de Google directamente no se renderiza (ver

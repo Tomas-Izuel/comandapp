@@ -36,6 +36,7 @@ function toBranding(row: StoreBrandingRow | null): Branding {
     color_background: row.color_background,
     color_foreground: row.color_foreground,
     radius_rem: Number(row.radius_rem),
+    density: row.density,
     font_heading: row.font_heading,
     font_body: row.font_body,
     theme_mode: row.theme_mode,
@@ -138,6 +139,19 @@ export const requireStoreMembership = cache(
     if (error) throw new Error(`No se pudo verificar la membresía: ${error.message}`)
     if (!data) throw new Error('No sos parte del staff de esta tienda')
 
+    // Un repartidor NO es staff, y este es el único cuello de botella por el
+    // que pasan todas las pages y actions de /admin: cerrarlo acá los cubre a
+    // todos de una.
+    //
+    // Hoy es inalcanzable —`private.is_store_member()` filtra por
+    // `role in ('owner','staff')`, así que la lectura de arriba ni devuelve la
+    // fila—, y por eso mismo hace falta: sin esto, aflojar esa RLS por error
+    // convertiría a cada repartidor en staff del local sin que nada lo diga.
+    // El cast de la línea siguiente era exactamente esa mentira.
+    if (data.role === 'courier') {
+      throw new DomainError('Los repartidores entran por /repartidor, no por el panel del local', { status: 403 })
+    }
+
     const role = data.role as 'owner' | 'staff'
     if (opts?.role === 'owner' && role !== 'owner') {
       throw new DomainError('Esta acción es solo para el dueño del local', { status: 403 })
@@ -155,6 +169,14 @@ export async function updateStoreSettings(storeId: number, input: StoreSettingsI
   const parsed = storeSettingsInputSchema.parse(input)
   const supabase = await createClient()
 
+  // "Las dos o ninguna" se normaliza acá en vez de con un `.refine()` sobre el
+  // objeto: refinar convierte el schema en `ZodEffects` y ese tipo se propaga a
+  // `zodResolver` y a cualquier `.shape`/`.pick()` del formulario. Media
+  // coordenada no ubica nada, así que colapsarla a null es la respuesta
+  // correcta y no hay nada que explicarle al dueño. El CHECK de Postgres sigue
+  // siendo la garantía real.
+  const hasCoordinates = parsed.latitude !== null && parsed.longitude !== null
+
   const { error } = await supabase
     .from('stores')
     .update({
@@ -170,6 +192,26 @@ export async function updateStoreSettings(storeId: number, input: StoreSettingsI
       min_order_cents: parsed.minOrderCents,
       demand_threshold_orders: parsed.demandThresholdOrders,
       demand_multiplier: parsed.demandMultiplier,
+      auto_start_orders: parsed.autoStartOrders,
+      auto_ready_orders: parsed.autoReadyOrders,
+      latitude: hasCoordinates ? parsed.latitude : null,
+      longitude: hasCoordinates ? parsed.longitude : null,
+      instagram_handle: parsed.instagramHandle,
+      maps_url: parsed.mapsUrl,
+      rappi_url: parsed.rappiUrl,
+      pedidos_ya_url: parsed.pedidosYaUrl,
+      uber_eats_url: parsed.uberEatsUrl,
+      delivery_enabled: parsed.deliveryEnabled,
+      delivery_fee_cents: parsed.deliveryFeeCents,
+      delivery_free_from_cents: parsed.deliveryFreeFromCents,
+      delivery_min_order_cents: parsed.deliveryMinOrderCents,
+      delivery_minutes: parsed.deliveryMinutes,
+      delivery_busy_minutes: parsed.deliveryBusyMinutes,
+      // `courier_collects_payment` NO se escribe acá a propósito: ver el
+      // comentario en `storeSettingsInputSchema` (store.schema.ts). Ese campo
+      // solo lo toca `confirmPendingChangeAction` con `createAdminClient()`
+      // detrás del código de 6 dígitos — agregarlo de vuelta a este `.update()`
+      // reabre el bypass que el candado de plata vino a cerrar.
     })
     .eq('id', storeId)
 
@@ -201,6 +243,7 @@ export async function upsertBranding(storeId: number, input: Branding): Promise<
       color_background: parsed.color_background,
       color_foreground: parsed.color_foreground,
       radius_rem: parsed.radius_rem,
+      density: parsed.density,
       font_heading: parsed.font_heading,
       font_body: parsed.font_body,
       theme_mode: parsed.theme_mode,

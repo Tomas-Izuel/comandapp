@@ -59,6 +59,14 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  /* `rounded-pill` — la píldora que SÍ obedece al radio del local.
+     `rounded-full` es un 9999px hardcodeado: con un local que eligió esquinas
+     rectas, cada botón, chip y badge seguía saliendo cápsula y la marca no se
+     veía por ningún lado. Esto se satura en píldora cuando el radio es
+     generoso y se endereza cuando el local eligió cuadrado. Solo lo que TIENE
+     que ser un círculo (avatares, el punto de un radio, un badge de conteo)
+     se queda en `rounded-full`. */
+  --radius-pill: min(9999px, calc(var(--radius) * 4));
 }
 
 :root {
@@ -95,7 +103,18 @@
   --radius: 0.875rem;
 
   /* Escala de espaciado del producto. Existe para que "grupo apretado /
-     separación generosa" sea un token y no el criterio de cada archivo. */
+     separación generosa" sea un token y no el criterio de cada archivo.
+
+     Estos son los valores de la PLATAFORMA (/admin, /backoffice). La cara del
+     cliente los recibe ya escalados por la densidad del local: `buildThemeCss()`
+     los REEMITE resueltos dentro de `[data-store-theme]`.
+
+     No intentes derivarlos acá con `calc(… * var(--density-scale))`: el `var()`
+     de una custom property se sustituye donde la propiedad se DECLARA, así que
+     el factor de `:root` (1) quedaría congelado y heredado, y pisar
+     `--density-scale` en el scope de la tienda no movería nada. Verificado en
+     el browser. Ver el comentario largo en `src/lib/theme.ts`. */
+  --density-scale: 1;
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -125,8 +144,76 @@
 
   /* Columna de lectura del storefront. La foto sangra, el texto no. */
   --content-max: 46rem;
-  /* Cuánto tapa el encabezado pegajoso + el riel de categorías. */
-  --sticky-offset: 7.5rem;
+
+  /* --- Chasis pegajoso de la vitrina --------------------------------------
+     Las dos barras que tapan contenido, cada una declarada UNA vez. Antes el
+     total estaba hardcodeado en `--sticky-offset` y las alturas repetidas a
+     mano en `store-chrome.tsx` y `catalog-list.tsx`: cambiar una y olvidar la
+     otra dejaba el riel de categorías tapando la sección a la que acababa de
+     llevar. */
+  --chrome-h: 3.75rem;
+  --rail-h: 4.5rem;
+  --sticky-offset: calc(var(--chrome-h) + var(--rail-h));
+
+  /* --- Dock flotante -------------------------------------------------------
+     La barra de canales del local, flotando sobre el contenido al alcance del
+     pulgar. No es la `.action-bar` (esa se pega al borde y ocupa el ancho):
+     el dock flota, así que necesita su propio aire y su propia reserva de
+     espacio al final de la página. */
+  --dock-h: 3.5rem;
+  --dock-gap: 0.75rem;
+
+  /* --- Chasis de /admin y /backoffice -------------------------------------
+     El panel NO usa `--content-max`: esa es la columna de lectura de la cara
+     del cliente. Acá la escena primaria es la pantalla del mostrador, y sin
+     un tope propio el contenido se estira hasta 1920px.
+
+     Tres anchos declarados, no siete improvisados por archivo:
+       board  el tablero de cocina, que quiere todo el ancho pero no infinito
+       table  el historial denso
+       form   ajustes, pagos, apariencia: columna de lectura, centrada */
+  --admin-max-board: 110rem;
+  --admin-max-table: 90rem;
+  --admin-max-form: 48rem;
+  /* Ancho del rail lateral en ≥lg. Debajo de lg no existe: ahí la nav es el
+     riel horizontal, que no le come ancho a la cola de cocina. */
+  --admin-rail: 15rem;
+  /* Padding del área de trabajo. Un solo valor para las siete secciones. */
+  --admin-gutter: 1rem;
+  --admin-gutter-lg: 2rem;
+  /* Offset al que tiene que empezar el contenido `sticky` DENTRO del área de
+     trabajo. Vale 0 y no es un olvido: desde que `/admin` es un chasis de
+     viewport fijo, el chrome (header en mobile, rail en desktop) vive FUERA
+     del contenedor que scrollea, así que no hay nada arriba de `<main>` que
+     descontar. Se mantiene como token en vez de escribir `top-0` en once
+     lugares porque el motivo es lo que hay que poder leer, y porque si el
+     chrome volviera a quedar por encima del scroll se corrige acá y no en
+     once archivos. Antes lo medía un ResizeObserver en el shell. */
+  --admin-header-h: 0px;
+
+  /* --- La voz tipográfica del sistema --------------------------------------
+     Sin estas dos líneas la app entera renderizaba con la fuente por defecto
+     del navegador (Times), y no es una exageración: `@theme inline` declara
+     `--font-sans: var(--font-sans)`, que no define nada, y la única definición
+     real vivía dentro de `[data-store-theme]`. Como `html { font-family:
+     var(--font-sans) }` se computa en `<html>`, ahí la variable no existía, la
+     declaración quedaba inválida (IACVT → `unset` → `initial`) y todo heredaba
+     el default del navegador. Lo único que se salvaba era `.display`, que lee
+     `var(--font-heading)` en su propia regla dentro del scope de la tienda.
+
+     Inter y no Geist: esta es la voz de /admin y /backoffice, que son
+     superficies Operate leídas de pie a un metro en la pantalla del mostrador.
+     Inter está dibujada para eso —altura de x grande, numerales tabulares
+     reales, 1/l/I y 0/O que no se confunden a distancia— y el panel es casi
+     todo números en columna. NO cambia la cara del cliente: la tienda pisa
+     `--font-sans` con su propia elección y el default de `brandingSchema`
+     sigue siendo Geist.
+
+     Va sin `preload` (ver `src/lib/fonts.ts`): precargar acá es precargar en
+     TODA ruta, incluida la del cliente en 3G. `next/font` genera un fallback
+     con métricas ajustadas ("Inter Fallback"), así que el swap no salta. */
+  --font-sans: var(--font-inter);
+  --font-heading: var(--font-inter);
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -188,6 +275,15 @@
   }
   html {
     @apply font-sans;
+  }
+  /* La vitrina tiene que RE-APLICAR la familia, no solo redefinir la variable.
+     `html { font-family: var(--font-sans) }` se computa en `<html>`: los
+     descendientes heredan el valor YA RESUELTO, así que el
+     `--font-sans: var(--font-geist)` que `buildThemeCss()` escribe en
+     `[data-store-theme]` no cambiaba nada por sí solo. Con esta línea la
+     tipografía que el dueño eligió en Apariencia por fin llega a la carta. */
+  [data-store-theme] {
+    font-family: var(--font-sans);
   }
 }
 /* ---------------------------------------------------------------------------
@@ -264,6 +360,19 @@ a {
 .action-bar {
   padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
   box-shadow: var(--shadow-lift);
+}
+
+/* El dock flota: se despega del borde y respeta la barra de gestos del
+   iPhone, igual que `.action-bar` pero sin pegarse. */
+.dock {
+  bottom: calc(var(--dock-gap) + env(safe-area-inset-bottom, 0px));
+}
+
+/* Lo que el dock tapa. Va en el contenedor de la página, no en el dock: un
+   elemento `fixed` no ocupa espacio, así que sin esto el último producto de la
+   carta queda debajo de la barra y no se puede tocar. */
+.dock-clearance {
+  padding-bottom: calc(var(--dock-h) + var(--dock-gap) * 2 + env(safe-area-inset-bottom, 0px));
 }
 
 /* Un encabezado pegajoso no puede tapar la sección a la que te acaba de

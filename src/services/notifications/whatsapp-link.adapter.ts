@@ -32,6 +32,11 @@ function buildMessage(template: NotificationTemplate, vars: NotificationVars): s
     }
     case 'order_ready':
       return `¡Hola ${customerName}! Tu pedido ${shortCode} en ${storeName} ya está listo para retirar 🍔. ${trackingUrl}`
+    case 'order_on_the_way':
+      // "En camino" es la contraparte de "listo": buena noticia, mismo tono.
+      // Nunca se manda junto con `order_ready` para el mismo pedido —la guarda
+      // vive en `kitchen.controller.ts`— así que acá no hace falta distinguir.
+      return `¡Hola ${customerName}! Tu pedido ${shortCode} en ${storeName} salió, va en camino 🛵. Seguilo acá: ${trackingUrl}`
     case 'order_cancelled': {
       // La plata importa más que el tono acá: si había un pago aprobado, el
       // mensaje tiene que decir qué pasa con él en la misma línea, no dejar

@@ -42,9 +42,12 @@ export function SalesChart({ data, currency }: { data: SalesPoint[]; currency: s
         <p className="text-muted-foreground mb-2 text-xs font-medium">Facturación por día</p>
         {/* aria-hidden: el SVG del gráfico es invisible para un lector de
             pantalla igual, y sin esto recharts deja pasar texto suelto del
-            tooltip que duplica —desordenado— la tabla `sr-only` de abajo. */}
-        <div aria-hidden>
-          <ResponsiveContainer width="100%" height={180}>
+            tooltip que duplica —desordenado— la tabla `sr-only` de abajo.
+            La altura crece en ≥lg (calza con el esqueleto de `dashboard/page.tsx`)
+            porque `ResponsiveContainer` necesita un contenedor con alto propio
+            para leer "100%": no acepta un breakpoint en su prop `height`. */}
+        <div aria-hidden className="h-[180px] lg:h-[220px]">
+          <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ left: 0, right: 4, top: 4, bottom: 0 }}>
               <CartesianGrid vertical={false} stroke="var(--border)" />
               <XAxis dataKey="date" tickFormatter={formatDay} tick={AXIS_TICK} axisLine={false} tickLine={false} />
@@ -86,8 +89,8 @@ export function SalesChart({ data, currency }: { data: SalesPoint[]; currency: s
 
       <div>
         <p className="text-muted-foreground mb-2 text-xs font-medium">Pedidos por día</p>
-        <div aria-hidden>
-          <ResponsiveContainer width="100%" height={180}>
+        <div aria-hidden className="h-[180px] lg:h-[220px]">
+          <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ left: 0, right: 4, top: 4, bottom: 0 }}>
               <CartesianGrid vertical={false} stroke="var(--border)" />
               <XAxis dataKey="date" tickFormatter={formatDay} tick={AXIS_TICK} axisLine={false} tickLine={false} />

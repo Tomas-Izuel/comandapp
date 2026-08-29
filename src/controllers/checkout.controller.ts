@@ -2,8 +2,10 @@ import 'server-only'
 
 import { after } from 'next/server'
 import { serverEnv } from '@/lib/env.server'
+import { buildDeliveryQuote } from '@/lib/delivery'
 import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
+import { getCourierAvailability } from '@/models/courier.model'
 import { getStoreBySlug } from '@/models/store.model'
 import {
   attachPreference,
@@ -26,7 +28,7 @@ import type { CheckoutSession, PaymentSnapshot } from '@/services/payments/payme
 import { getNotifier } from '@/services/notifications'
 import { getEmailSender } from '@/services/notifications/email'
 import type { CartItem, CreateOrderInput } from '@/models/schemas/order.schema'
-import type { EtaEstimate, Order, OrderPublicView, PricedCart, Store } from '@/models/types'
+import type { DeliveryQuote, EtaEstimate, Order, OrderPublicView, PricedCart, Store } from '@/models/types'
 import type { EmailVars } from '@/services/notifications/email/email.port'
 
 /**
@@ -44,7 +46,7 @@ const CHECKOUT_EXPIRES_MINUTES = 30
 
 const isProduction = process.env.NODE_ENV === 'production'
 
-export type PriceQuote = { store: Store; priced: PricedCart; eta: EtaEstimate }
+export type PriceQuote = { store: Store; priced: PricedCart; eta: EtaEstimate; delivery: DeliveryQuote }
 
 // ---------------------------------------------------------------------------
 // Notificaciones — nunca cambian el resultado de la operación que las dispara.
@@ -136,9 +138,24 @@ export async function priceCartForStore(storeSlug: string, items: CartItem[]): P
   // forma de paralelizarlas acá, a diferencia de otros lugares que resuelven
   // Store y no dependen entre sí.
   const priced = await priceCart(store, items)
-  const eta = await estimateEta(store, priced.basePrepMinutes)
 
-  return { store, priced, eta }
+  // Salteamos la consulta de disponibilidad cuando el local no hace envíos:
+  // es un query extra por cada cotización (rate limit 120/min/IP), y para
+  // todo local que no usa la feature el costo tiene que ser exactamente cero.
+  const availability = store.delivery.enabled
+    ? await getCourierAvailability(store.id)
+    : { activeCouriers: 0, freeCouriers: 0 }
+
+  const delivery = buildDeliveryQuote({
+    delivery: store.delivery,
+    subtotalCents: priced.subtotalCents,
+    availability,
+    currency: store.currency,
+  })
+
+  const eta = await estimateEta(store, priced.basePrepMinutes, delivery.minutesToAdd)
+
+  return { store, priced, eta, delivery }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,16 +164,28 @@ export async function priceCartForStore(storeSlug: string, items: CartItem[]): P
 
 async function createCheckoutForOrder(order: Order, store: Store): Promise<CheckoutSession> {
   const provider = getPaymentProvider()
+
+  const items = order.items.map((item) => ({
+    name: item.nameSnapshot,
+    quantity: item.quantity,
+    unitPriceCents: item.unitPriceCents,
+  }))
+
+  // Mercado Pago arma su propio total sumando `unit_price × quantity` de cada
+  // item de la preferencia: si el envío no viaja como un item más, MP le cobra
+  // al cliente solo el subtotal aunque `totalCents` incluya el fee. El webhook
+  // llega después con un monto que no alcanza y `markOrderPaid` lo marca
+  // `mismatch` para siempre — el cliente pagó, el pedido nunca se confirma.
+  if (order.deliveryFeeCents > 0) {
+    items.push({ name: 'Envío', quantity: 1, unitPriceCents: order.deliveryFeeCents })
+  }
+
   const checkout = await provider.createCheckout({
     storeId: store.id,
     orderToken: order.publicToken,
     orderShortCode: order.shortCode,
     storeName: store.name,
-    items: order.items.map((item) => ({
-      name: item.nameSnapshot,
-      quantity: item.quantity,
-      unitPriceCents: item.unitPriceCents,
-    })),
+    items,
     payerName: order.customerName,
     payerPhoneE164: order.customerPhoneE164,
     totalCents: order.totalCents,

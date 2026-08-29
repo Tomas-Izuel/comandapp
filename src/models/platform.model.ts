@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { cache } from 'react'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient, getCurrentUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -37,6 +38,22 @@ type PlatformStoreRpcRow = {
   min_order_cents: number
   demand_threshold_orders: number
   demand_multiplier: number | string
+  auto_start_orders: boolean
+  auto_ready_orders: boolean
+  latitude: number | string | null
+  longitude: number | string | null
+  instagram_handle: string | null
+  maps_url: string | null
+  rappi_url: string | null
+  pedidos_ya_url: string | null
+  uber_eats_url: string | null
+  delivery_enabled: boolean
+  delivery_fee_cents: number
+  delivery_free_from_cents: number
+  delivery_min_order_cents: number
+  delivery_minutes: number
+  delivery_busy_minutes: number
+  courier_collects_payment: boolean
   created_at: string
   owner_email: string | null
   orders_last_30: number
@@ -61,6 +78,27 @@ function toPlatformStoreRow(row: PlatformStoreRpcRow): PlatformStoreRow {
     demandThresholdOrders: row.demand_threshold_orders,
     // numeric(4,2) llega como string por el driver.
     demandMultiplier: Number(row.demand_multiplier),
+    autoStartOrders: row.auto_start_orders,
+    autoReadyOrders: row.auto_ready_orders,
+    // numeric llega como string por el driver, igual que `demand_multiplier`.
+    latitude: row.latitude == null ? null : Number(row.latitude),
+    longitude: row.longitude == null ? null : Number(row.longitude),
+    links: {
+      instagramHandle: row.instagram_handle,
+      mapsUrl: row.maps_url,
+      rappiUrl: row.rappi_url,
+      pedidosYaUrl: row.pedidos_ya_url,
+      uberEatsUrl: row.uber_eats_url,
+    },
+    delivery: {
+      enabled: row.delivery_enabled,
+      feeCents: row.delivery_fee_cents,
+      freeFromCents: row.delivery_free_from_cents,
+      minOrderCents: row.delivery_min_order_cents,
+      minutes: row.delivery_minutes,
+      busyMinutes: row.delivery_busy_minutes,
+      courierCollects: row.courier_collects_payment,
+    },
     ownerEmail: row.owner_email,
     ordersLast30: row.orders_last_30,
     revenueLast30Cents: row.revenue_last_30_cents,
@@ -83,16 +121,90 @@ function toAuditEntry(row: AuditRow): AuditEntry {
 }
 
 /**
+ * Cuánto vive una sesión del backoffice, contada desde que se completó el
+ * segundo factor.
+ *
+ * `[auth.sessions]` de Supabase es POR PROYECTO: un solo número para el staff
+ * de los locales, los repartidores y el platform admin. El staff necesita
+ * semanas (su única puerta es un magic link que hay que ir a buscar al mail
+ * desde el mostrador), y quien puede suspender locales y ver la facturación de
+ * toda la plataforma no puede tener eso. Como el ajuste no se puede separar por
+ * rol allá, el límite corto del backoffice se aplica acá.
+ */
+const MAX_BACKOFFICE_SESSION_SECONDS = 12 * 60 * 60
+
+/**
+ * Marca el caso "tu sesión del backoffice cumplió las 12 horas", que es el
+ * único fallo de `requirePlatformAdmin()` que se puede diagnosticar con
+ * certeza — todos los demás llegan como "0 filas" y son indistinguibles entre
+ * sí (ver el comentario de abajo).
+ *
+ * Existe como clase y no como un mensaje más porque el destino es distinto: el
+ * resto va a `/backoffice/mfa`, y este tiene que ir a `/backoffice/login`. Una
+ * sesión vencida por edad sigue siendo `aal2` para Supabase, así que mandarla a
+ * la pantalla de MFA no arregla nada: lo que la renueva es un login nuevo, que
+ * es lo que emite un `amr` nuevo.
+ */
+export class BackofficeSessionExpiredError extends DomainError {
+  constructor() {
+    super('Por seguridad, el backoffice cierra la sesión cada 12 horas. Ingresá de nuevo.', { status: 401 })
+    this.name = 'BackofficeSessionExpiredError'
+  }
+}
+
+/**
+ * Cuándo se autenticó de verdad esta sesión, en segundos unix.
+ *
+ * Sale del claim `amr` (*authentication methods reference*) del JWT, que es un
+ * array `[{ method, timestamp }]` con una entrada por factor usado. El
+ * `timestamp` más nuevo es el momento en que se completó el TOTP.
+ *
+ * Se lee del token y no de `auth.sessions` a propósito: `getClaims()` valida la
+ * firma localmente contra las claves públicas del proyecto, así que esto no
+ * agrega un solo round trip a un chequeo que corre en cada page del backoffice.
+ * Y `amr` se re-emite intacto en cada refresh —es para lo que existe—, así que
+ * rotar el access token no rejuvenece la sesión.
+ */
+function authTimeFromClaims(claims: Record<string, unknown> | null | undefined): number | null {
+  const amr = claims?.amr
+  if (!Array.isArray(amr)) return null
+
+  const timestamps = amr
+    .map((entry) => (entry && typeof entry === 'object' ? (entry as { timestamp?: unknown }).timestamp : null))
+    .filter((t): t is number => typeof t === 'number' && Number.isFinite(t))
+
+  return timestamps.length > 0 ? Math.max(...timestamps) : null
+}
+
+/**
  * Sesión de plataforma. RLS ya exige `aal2` dentro de `private.is_platform_admin()`,
  * así que una sesión de staff sin segundo factor ve 0 filas acá aunque el
  * usuario esté en `platform_admins`. Por eso "0 filas" alcanza como señal de
  * "no autorizado": no hace falta distinguir el motivo.
+ *
+ * `cache()` por el mismo motivo que `getCurrentUser()`: una page del backoffice
+ * lo llama una vez para la guardia y después una vez por cada lectura que hace,
+ * y sin memoizar eso son cuatro consultas a `platform_admins` por request.
  */
-export async function requirePlatformAdmin(): Promise<{ userId: string; email: string }> {
+export const requirePlatformAdmin = cache(async (): Promise<{ userId: string; email: string }> => {
   const user = await getCurrentUser()
   if (!user) throw new Error('No hay una sesión activa')
 
   const supabase = await createClient()
+
+  // El corte por edad va ANTES de la consulta: si la sesión ya está vencida no
+  // tiene sentido preguntarle a Postgres si además es admin.
+  //
+  // Sin `amr` (un token viejo, o un proveedor que no lo emita) no se corta: el
+  // fallback es dejar pasar y que decidan las RLS, porque el modo de falla
+  // contrario —desloguear a todos los platform admins por un claim ausente— es
+  // peor y encima se ve como "perdí el acceso", no como "se venció".
+  const { data: claimsData } = await supabase.auth.getClaims()
+  const authTime = authTimeFromClaims(claimsData?.claims)
+  if (authTime !== null && Date.now() / 1000 - authTime > MAX_BACKOFFICE_SESSION_SECONDS) {
+    throw new BackofficeSessionExpiredError()
+  }
+
   const { data, error } = await supabase
     .from('platform_admins')
     .select('user_id, email')
@@ -103,7 +215,7 @@ export async function requirePlatformAdmin(): Promise<{ userId: string; email: s
   if (!data) throw new Error('No tenés acceso al backoffice de la plataforma')
 
   return { userId: data.user_id, email: data.email }
-}
+})
 
 /**
  * `platform_metrics()` agrega en Postgres (A-01, A-09). Antes esto traía 30

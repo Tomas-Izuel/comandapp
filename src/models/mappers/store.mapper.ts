@@ -34,5 +34,29 @@ export function toStore(row: StoreRow): Store {
     // numeric(4,2) llega como string por el driver: sin Number() el
     // multiplicador de demanda se concatena en vez de multiplicar.
     demandMultiplier: Number(row.demand_multiplier),
+    autoStartOrders: row.auto_start_orders,
+    autoReadyOrders: row.auto_ready_orders,
+    // numeric llega como string por el driver, igual que `demand_multiplier`.
+    latitude: row.latitude == null ? null : Number(row.latitude),
+    longitude: row.longitude == null ? null : Number(row.longitude),
+    links: {
+      instagramHandle: row.instagram_handle,
+      mapsUrl: row.maps_url,
+      rappiUrl: row.rappi_url,
+      pedidosYaUrl: row.pedidos_ya_url,
+      uberEatsUrl: row.uber_eats_url,
+    },
+    // Todo entero: acá no hay ningún Number() porque ninguna de estas columnas
+    // es `numeric`. Fue deliberado al diseñar el schema, justamente para no
+    // repetir la trampa que `demand_multiplier` documenta dos veces arriba.
+    delivery: {
+      enabled: row.delivery_enabled,
+      feeCents: row.delivery_fee_cents,
+      freeFromCents: row.delivery_free_from_cents,
+      minOrderCents: row.delivery_min_order_cents,
+      minutes: row.delivery_minutes,
+      busyMinutes: row.delivery_busy_minutes,
+      courierCollects: row.courier_collects_payment,
+    },
   }
 }

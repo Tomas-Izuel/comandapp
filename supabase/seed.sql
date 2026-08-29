@@ -3,17 +3,31 @@
 -- El pago presencial va habilitado en la tienda de demo a propósito: es el
 -- único camino de pago que se puede recorrer completo sin cargar credenciales
 -- de Mercado Pago, así que sin esto el QC del ciclo de pedido queda bloqueado.
+-- Links de demo del dock de la vitrina: valores plausibles, no reales, pero
+-- tienen que pasar los CHECK de `stores_*_url_check` (mismo regex que
+-- `store.schema.ts`). `maps_url` es una búsqueda de Google Maps por la
+-- dirección de arriba, no un place_id inventado.
 insert into public.stores (slug, name, description, phone_e164, whatsapp_phone_e164, address,
                            min_order_cents, demand_threshold_orders, demand_multiplier,
-                           in_store_payment_enabled)
+                           in_store_payment_enabled,
+                           instagram_handle, maps_url, rappi_url, pedidos_ya_url, uber_eats_url)
 values ('la-birra', 'La Birra Burgers', 'Smash burgers y papas de verdad.',
         '+5491122334455', '+5491122334455', 'Av. Corrientes 1234, CABA',
         500000, 5, 1.60,
-        true)
+        true,
+        'labirra.ok',
+        'https://www.google.com/maps/search/?api=1&query=Av.+Corrientes+1234%2C+CABA',
+        'https://www.rappi.com.ar/restaurantes/la-birra-burgers',
+        'https://www.pedidosya.com.ar/restaurantes/buenos-aires/la-birra-burgers',
+        'https://www.ubereats.com/ar/store/la-birra-burgers')
 on conflict (slug) do nothing;
 
+-- Defaults del mundo visual nuevo (2026-08-28): el verde bajado en lightness
+-- hasta 4.54:1 contra blanco, no el naranja de etiqueta de cerveza que
+-- reemplazó. Mismos valores que el DEFAULT de la columna — ver
+-- `branding.schema.ts` para el porqué completo del contraste.
 insert into public.store_branding (store_id, color_primary, color_accent, radius_rem, font_heading, font_body)
-select id, '#f97316', '#fb923c', 0.25, 'bebas-neue', 'geist'
+select id, '#468511', '#8cc63f', 1.25, 'geist', 'geist'
 from public.stores where slug = 'la-birra'
 on conflict (store_id) do nothing;
 
