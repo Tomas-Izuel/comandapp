@@ -86,6 +86,15 @@ export async function uploadProductImage(
     const { error } = await supabase.storage.from(BUCKET).upload(path, compressed, {
       contentType: compressed.type || file.type,
       upsert: false,
+      // T5: el objeto de origen tiene que declarar el mismo TTL que
+      // `minimumCacheTTL` de next.config.ts (1 año). El path es un UUID v4
+      // subido con upsert:false, así que el contenido de una URL nunca
+      // cambia — cambiar la foto de un producto genera un path nuevo, nunca
+      // pisa el viejo. Sin este header el objeto sale con el default de
+      // Supabase Storage (`max-age=3600`); Next ya toma el mayor de los dos
+      // TTL, pero declararlo acá evita que un CDN intermedio o un fetch
+      // directo al storage (fuera de `/_next/image`) revalide cada hora.
+      cacheControl: '31536000',
     })
 
     if (error) return { ok: false, error: `No se pudo subir la foto: ${error.message}` }

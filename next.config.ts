@@ -239,6 +239,18 @@ const nextConfig: NextConfig = {
      * dada NUNCA cambia. Cambiar la foto de un producto genera una URL nueva.
      */
     minimumCacheTTL: 31536000,
+    /**
+     * Pinneado, no agregado: el default de Next YA es `[75]` y el optimizador
+     * lo aplica (`if (qualities) ... not allowed`), así que hoy un `q=90` ya
+     * rebota. Se declara explícito por el mismo motivo que `search`: el otro
+     * default —el de `search`, que es permisivo— es justamente el que abrió el
+     * agujero. Un default del que dependemos en silencio es una decisión que no
+     * tomamos nosotros y que un upgrade puede cambiar sin avisar.
+     *
+     * Cada valor de `q` admitido es un multiplicador sobre las variantes por
+     * foto: uno solo mantiene el conteo en anchos × formatos.
+     */
+    qualities: [75],
   },
   headers,
 }
