@@ -597,6 +597,12 @@ export type RateLimitBucket =
   | 'magic_link:global'
   // Seguimiento y compra.
   | 'lookup:ip'
+  // No es un límite: es un dedupe. Con `limit: 1` sobre la `idempotencyKey`,
+  // exactamente UNA de N requests concurrentes recibe `allowed: true` —el
+  // contador de Postgres es atómico— y es la única que gasta cupo de los
+  // baldes reales. Sin esto, un doble tap con mala señal (el caso que la
+  // idempotencia existe para proteger) gasta dos cupos por una sola compra.
+  | 'order:idempotency'
   | 'order:phone'
   | 'order:store'
   // Invitaciones y cambios sensibles: todos mandan mail, todos son autenticados.

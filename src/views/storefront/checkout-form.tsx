@@ -560,7 +560,12 @@ export function CheckoutForm({
             <AlertDescription>Vista previa — desde acá no se puede pedir.</AlertDescription>
           </Alert>
         ) : formError ? (
-          <Alert variant="destructive" className="mb-3">
+          // `aria-live="assertive"` explícito además del `role="alert"` que ya
+          // trae `Alert`: cuando el mensaje cambia de un intento fallido al
+          // siguiente (ej. dos 429 seguidos), el nodo sigue montado y solo
+          // cambia el texto — sin esto, un lector de pantalla puede no
+          // re-anunciar un simple cambio de contenido dentro del mismo nodo.
+          <Alert variant="destructive" className="mb-3" aria-live="assertive">
             <CircleAlert />
             <AlertDescription>{formError}</AlertDescription>
           </Alert>

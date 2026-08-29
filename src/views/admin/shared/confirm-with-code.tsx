@@ -158,7 +158,12 @@ export const ConfirmWithCode = forwardRef<
 
         {phase?.step === 'request-failed' ? (
           <div className="flex flex-col gap-4">
-            <p role="alert" className="text-destructive text-sm">
+            {/* El mensaje es del `DomainError`/`RateLimitError` tal cual (S-06):
+                si el pedido del código chocó con `payment_change:store`, esto
+                es lo único que la persona ve. `aria-live` explícito porque el
+                diálogo ya está abierto cuando este paso reemplaza a
+                "requesting" — no hay remount que dispare el anuncio solo. */}
+            <p role="alert" aria-live="assertive" className="text-destructive text-sm">
               {phase.message}
             </p>
             <DialogFooter>

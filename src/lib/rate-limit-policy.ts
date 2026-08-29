@@ -39,6 +39,11 @@ export const RATE_LIMIT_POLICY: Record<RateLimitBucket, { limit: number; windowS
   // `lookup:ip` es más ajustado que el resto porque el endpoint acepta hasta 50
   // tokens por request: una sola llamada ya es 50 sondeos.
   'lookup:ip': { limit: 20, windowSeconds: 60 },
+  // Dedupe de reintentos, no límite de abuso: `limit: 1` significa "la primera
+  // vez que veo esta clave". No abre un bypass de `order:phone` porque reusar
+  // una `idempotencyKey` no crea un pedido nuevo — devuelve el que ya existe.
+  // Misma ventana que `order:phone` para que los dos caduquen juntos.
+  'order:idempotency': { limit: 1, windowSeconds: 10 * 60 },
   'order:phone': { limit: 5, windowSeconds: 10 * 60 },
   // NO BLOQUEA. Es un detector de anomalía por tienda: 300 pedidos en 10
   // minutos en un local que hace 40 por noche es una señal, pero cortar la
