@@ -89,6 +89,11 @@ export function StoreDetail({ store }: { store: PlatformStoreRow }) {
               value: store.inStorePaymentEnabled ? 'Habilitado' : 'Deshabilitado',
               muted: !store.inStorePaymentEnabled,
             },
+            {
+              label: 'Cobro online',
+              value: store.onlinePaymentEnabled ? 'Conectado' : 'Sin conectar',
+              muted: !store.onlinePaymentEnabled,
+            },
             { label: 'Mínimo', value: formatCentsCompact(store.minOrderCents, store.currency) },
             { label: 'Multiplicador de demanda', value: `×${store.demandMultiplier}` },
           ]}

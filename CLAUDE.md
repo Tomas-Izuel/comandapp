@@ -265,6 +265,19 @@ base, porque ahí no hay camino que la esquive:
 - `stores_slug_not_reserved_check` — lista negra de slugs, duplicada a propósito
   en `RESERVED_SLUGS` de `platform.schema.ts`: la base garantiza que no entre, el
   schema hace que el mensaje se entienda. Si agregás uno, va en los dos lados.
+- `private.sync_store_online_payment` — mantiene `stores.online_payment_enabled`
+  en sync con el access token de Mercado Pago. Es una columna **derivada**: la
+  fuente de verdad sigue siendo `store_payment_credentials`, que no tiene un
+  solo grant para `anon` ni `authenticated` (ahí vive el token, cifrado). El
+  flag existe porque la vitrina necesita responder "¿esta tienda puede cobrar
+  online?" sin acercar el secreto al borde. **No tiene `grant update` para
+  `authenticated`**, igual que `status` y `slug`.
+
+  El corolario está en `src/lib/store-availability.ts`: una tienda `active` y
+  con `accepting_orders = true` puede igual no tener **ningún** medio de pago
+  —ni Mercado Pago ni pago al retirar— y ése es el estado por defecto de todo
+  local recién dado de alta. `canTakeOrders()` es el gate real de la vitrina;
+  `acceptingOrders` solo dice qué decidió el dueño.
 
 ### RPCs: lo que no se puede hacer desde la app
 

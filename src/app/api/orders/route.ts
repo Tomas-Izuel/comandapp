@@ -145,6 +145,7 @@ export async function GET(request: NextRequest) {
         currency: store.currency,
         acceptingOrders: store.acceptingOrders,
         inStorePaymentEnabled: store.inStorePaymentEnabled,
+        onlinePaymentEnabled: store.onlinePaymentEnabled,
         minOrderCents: store.minOrderCents,
       },
       priced,

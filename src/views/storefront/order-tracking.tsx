@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { toast } from 'sonner'
 import { Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { MercadoPago } from '@/components/ui/mercadopago'
 import { OrderSteps, PaymentNotice, STATUS_LABEL } from '@/views/shared/order-status'
 import { Panel } from '@/views/shared/surfaces'
 import { Price } from '@/views/shared/money'
@@ -49,7 +50,8 @@ function ResumePaymentButton({ token }: { token: string }) {
 
   return (
     <div className="flex flex-col gap-1.5">
-      <Button type="button" className="h-11 rounded-pill" onClick={handleClick} disabled={isPending}>
+      <Button type="button" className="h-11 gap-2 rounded-pill" onClick={handleClick} disabled={isPending}>
+        <MercadoPago aria-hidden className="h-3.5 w-auto shrink-0" />
         {isPending ? 'Abriendo Mercado Pago…' : 'Ir a pagar'}
       </Button>
       {error ? <p className="text-destructive text-xs" role="alert">{error}</p> : null}

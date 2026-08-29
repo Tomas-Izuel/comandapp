@@ -27,10 +27,20 @@ import type { StoreWithBranding } from '@/models/types'
 export function StoreHero({
   store,
   etaMinutes,
+  acceptingOrders,
 }: {
   store: StoreWithBranding
   /** null = sin dato (tienda cerrada, sin productos, o el cálculo falló). Nunca se inventa un número. */
   etaMinutes: number | null
+  /**
+   * Ya resuelto por la page con `canTakeOrders(store)` — no `store.acceptingOrders`
+   * crudo. Ese campo es solo "el dueño no cerró"; una tienda recién dada de
+   * alta (sin Mercado Pago y sin pago al retirar) lo tiene en `true` y sin
+   * embargo no puede tomar pedidos. Recibirlo ya resuelto (en vez de
+   * recalcularlo acá con el `store` entero) es lo que garantiza que el hero y
+   * el `ClosedNotice` de la page nunca puedan decir cosas distintas.
+   */
+  acceptingOrders: boolean
 }) {
   const heroImageUrl = store.branding.hero_image_url
 
@@ -61,14 +71,22 @@ export function StoreHero({
             <h1 className="display text-3xl sm:text-4xl">{store.name}</h1>
           </div>
 
-          <HeroFacts store={store} etaMinutes={etaMinutes} />
+          <HeroFacts store={store} etaMinutes={etaMinutes} acceptingOrders={acceptingOrders} />
         </div>
       </div>
     </div>
   )
 }
 
-function HeroFacts({ store, etaMinutes }: { store: StoreWithBranding; etaMinutes: number | null }) {
+function HeroFacts({
+  store,
+  etaMinutes,
+  acceptingOrders,
+}: {
+  store: StoreWithBranding
+  etaMinutes: number | null
+  acceptingOrders: boolean
+}) {
   return (
     <ul className="flex flex-col gap-1.5">
       <li className="flex items-center gap-1.5 text-sm font-semibold">
@@ -76,7 +94,7 @@ function HeroFacts({ store, etaMinutes }: { store: StoreWithBranding; etaMinutes
             daltónico o alguien mirando la pantalla al sol tiene que leer lo
             mismo (mismo criterio que StatusPill, ver surfaces.tsx). */}
         <span className="bg-current size-1.5 shrink-0 rounded-full" aria-hidden />
-        {store.acceptingOrders ? 'Abierto ahora' : 'Cerrado por ahora'}
+        {acceptingOrders ? 'Abierto ahora' : 'Cerrado por ahora'}
       </li>
       {/*
        * Jerarquía secundaria por TAMAÑO Y PESO, no por color: con el primary
@@ -88,7 +106,7 @@ function HeroFacts({ store, etaMinutes }: { store: StoreWithBranding; etaMinutes
        * `ensureContrast`— pero más chicos y sin el semibold del estado.
        */}
       <li className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-medium">
-        {store.acceptingOrders && etaMinutes != null ? (
+        {acceptingOrders && etaMinutes != null ? (
           <span className="inline-flex items-center gap-1.5">
             <Clock className="size-3.5" aria-hidden />
             <span className="tabular">{etaMinutes}′</span> estimado

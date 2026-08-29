@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { estimateEta } from '@/models/order.model'
 import { getStorefront } from '@/controllers/storefront.controller'
+import { canTakeOrders } from '@/lib/store-availability'
 import { StoreHero } from '@/views/storefront/store-hero'
 import { CatalogList } from '@/views/storefront/catalog-list'
 import { ReorderHandler } from '@/views/storefront/reorder-handler'
@@ -22,8 +23,8 @@ import type { MenuCategory, StoreWithBranding } from '@/models/types'
  * reportado como candidato a mover ahí (p. ej. como `store.etaMinutes`) para
  * quien sea dueño de ese archivo.
  */
-async function getHeroEtaMinutes(store: StoreWithBranding, categories: MenuCategory[]): Promise<number | null> {
-  if (!store.acceptingOrders) return null
+async function getHeroEtaMinutes(store: StoreWithBranding, categories: MenuCategory[], canOrder: boolean): Promise<number | null> {
+  if (!canOrder) return null
 
   const prepMinutes = categories
     .flatMap((category) => category.products)
@@ -44,15 +45,20 @@ async function getHeroEtaMinutes(store: StoreWithBranding, categories: MenuCateg
 export default async function StorePage(props: PageProps<'/[store]'>) {
   const { store: slug } = await props.params
   const { store, categories } = await getStorefront(slug)
-  const etaMinutes = await getHeroEtaMinutes(store, categories)
+  // Se calcula UNA vez y se pasa a los dos que lo necesitan (el hero y el
+  // `ClosedNotice` de más abajo): dos cálculos independientes del mismo
+  // booleano en la misma page son dos lugares donde podrían llegar a
+  // discrepar, aunque hoy no lo hagan.
+  const canOrder = canTakeOrders(store)
+  const etaMinutes = await getHeroEtaMinutes(store, categories, canOrder)
 
   return (
     <>
       <Suspense fallback={null}>
         <ReorderHandler categories={categories} />
       </Suspense>
-      <StoreHero store={store} etaMinutes={etaMinutes} />
-      {!store.acceptingOrders ? <ClosedNotice storeName={store.name} /> : null}
+      <StoreHero store={store} etaMinutes={etaMinutes} acceptingOrders={canOrder} />
+      {!canOrder ? <ClosedNotice storeName={store.name} /> : null}
       {categories.length === 0 ? (
         <EmptyState
           title="Todavía sin carta"

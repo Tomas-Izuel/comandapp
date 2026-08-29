@@ -22,7 +22,15 @@ export type PricedItemQuote = {
 }
 
 type PreviewOk = {
-  store: { slug: string; name: string; currency: string; acceptingOrders: boolean; inStorePaymentEnabled: boolean; minOrderCents: number }
+  store: {
+    slug: string
+    name: string
+    currency: string
+    acceptingOrders: boolean
+    inStorePaymentEnabled: boolean
+    onlinePaymentEnabled: boolean
+    minOrderCents: number
+  }
   priced: { items: PricedItemQuote[]; subtotalCents: number; totalCents: number; basePrepMinutes: number }
   eta: { baseMinutes: number; multiplier: number; etaMinutes: number; activeOrders: number; isBusy: boolean }
   /**

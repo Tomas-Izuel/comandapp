@@ -76,6 +76,13 @@ export type Store = {
   status: StoreStatus
   acceptingOrders: boolean
   inStorePaymentEnabled: boolean
+  /**
+   * Derivado: hay un access token de Mercado Pago guardado para esta tienda.
+   * Lo mantiene un trigger en Postgres, nadie lo escribe a mano. Si es `false`
+   * la vitrina no puede ofrecer "pagar ahora": el checkout fallaría después de
+   * que el cliente ya dejó sus datos.
+   */
+  onlinePaymentEnabled: boolean
   minOrderCents: number
   demandThresholdOrders: number
   demandMultiplier: number

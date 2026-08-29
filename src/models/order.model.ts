@@ -7,6 +7,7 @@ import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
 import { formatCentsCompact, scaleUpInt, sumCents } from '@/lib/money'
 import { productImageUrl } from '@/lib/storage'
+import { canCollectPayment } from '@/lib/store-availability'
 import { getCourierAvailability } from '@/models/courier.model'
 import { toStore, type StoreRow } from '@/models/mappers/store.mapper'
 import {
@@ -446,11 +447,22 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
   }
   if (!storeRow || storeRow.status !== 'active') throw new DomainError('Esta tienda no está disponible')
   if (!storeRow.accepting_orders) throw new DomainError('La tienda no está aceptando pedidos en este momento')
-  if (parsed.paymentMethod === 'in_store' && !storeRow.in_store_payment_enabled) {
-    throw new DomainError('Esta tienda no acepta pago al retirar')
-  }
 
   const store = toStore(storeRow)
+
+  // Antes esto se enteraba recién en el adapter de Mercado Pago
+  // (`requireAccessToken`), después de que el cliente ya había armado el
+  // carrito y dejado nombre y teléfono: un 409 tardío. Sin NINGÚN medio de
+  // pago conectado el pedido no puede existir, así que corta acá.
+  if (!canCollectPayment(store)) {
+    throw new DomainError('Este local todavía no tiene un medio de pago activo')
+  }
+  if (parsed.paymentMethod === 'online' && !store.onlinePaymentEnabled) {
+    throw new DomainError('Este local no está cobrando online por ahora')
+  }
+  if (parsed.paymentMethod === 'in_store' && !store.inStorePaymentEnabled) {
+    throw new DomainError('Esta tienda no acepta pago al retirar')
+  }
 
   const priced = await priceCart(store, parsed.items)
 

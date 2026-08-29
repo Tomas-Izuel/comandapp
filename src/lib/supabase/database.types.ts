@@ -1026,6 +1026,7 @@ export type Database = {
           maps_url: string | null
           min_order_cents: number
           name: string
+          online_payment_enabled: boolean
           pedidos_ya_url: string | null
           phone_e164: string | null
           rappi_url: string | null
@@ -1061,6 +1062,7 @@ export type Database = {
           maps_url?: string | null
           min_order_cents?: number
           name: string
+          online_payment_enabled?: boolean
           pedidos_ya_url?: string | null
           phone_e164?: string | null
           rappi_url?: string | null
@@ -1096,6 +1098,7 @@ export type Database = {
           maps_url?: string | null
           min_order_cents?: number
           name?: string
+          online_payment_enabled?: boolean
           pedidos_ya_url?: string | null
           phone_e164?: string | null
           rappi_url?: string | null

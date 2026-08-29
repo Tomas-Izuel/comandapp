@@ -35,6 +35,7 @@ type PlatformStoreRpcRow = {
   status: string
   accepting_orders: boolean
   in_store_payment_enabled: boolean
+  online_payment_enabled: boolean
   min_order_cents: number
   demand_threshold_orders: number
   demand_multiplier: number | string
@@ -74,6 +75,7 @@ function toPlatformStoreRow(row: PlatformStoreRpcRow): PlatformStoreRow {
     status: row.status as StoreStatus,
     acceptingOrders: row.accepting_orders,
     inStorePaymentEnabled: row.in_store_payment_enabled,
+    onlinePaymentEnabled: row.online_payment_enabled,
     minOrderCents: row.min_order_cents,
     demandThresholdOrders: row.demand_threshold_orders,
     // numeric(4,2) llega como string por el driver.

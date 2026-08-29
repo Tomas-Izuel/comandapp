@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { MercadoPago } from '@/components/ui/mercadopago'
 import { Price } from '@/views/shared/money'
 import { EmptyState } from '@/views/shared/states'
 import { ActionBar, Panel } from '@/views/shared/surfaces'
@@ -39,11 +40,13 @@ export function CheckoutForm({
   currency,
   storeAddress,
   inStorePaymentEnabled,
+  onlinePaymentEnabled,
 }: {
   storeSlug: string
   currency: string
   storeAddress: string | null
   inStorePaymentEnabled: boolean
+  onlinePaymentEnabled: boolean
 }) {
   const router = useRouter()
   const { lines, hydrated, ensureIdempotencyKey } = useCart()
@@ -56,7 +59,10 @@ export function CheckoutForm({
   const isPreview = usePreviewMode()
   const basePath = useStoreBasePath()
 
-  const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>('online')
+  // Con un solo medio de cobro disponible no hay nada que elegir: el estado
+  // arranca directo en el único que existe, en vez de en 'online' a secas
+  // (que rompía la pantalla si el local solo tiene pago al retirar).
+  const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>(onlinePaymentEnabled ? 'online' : 'in_store')
   const [customerName, setCustomerName] = React.useState('')
   const [customerPhone, setCustomerPhone] = React.useState('')
   const [customerEmail, setCustomerEmail] = React.useState('')
@@ -129,6 +135,26 @@ export function CheckoutForm({
   const effectiveDeliveryMethod: DeliveryMethod =
     deliveryMethod === 'delivery' && (!delivery || !delivery.enabled || !delivery.available) ? 'pickup' : deliveryMethod
 
+  // Mismo criterio: si algún medio de cobro dejó de estar disponible
+  // mientras estaba elegido, no se lo manda. Con uno solo habilitado no hay
+  // radio que ofrecer, así que el único método disponible gana siempre.
+  const bothPaymentMethodsAvailable = onlinePaymentEnabled && inStorePaymentEnabled
+  const effectivePaymentMethod: PaymentMethod = bothPaymentMethodsAvailable
+    ? paymentMethod
+    : onlinePaymentEnabled
+      ? 'online'
+      : 'in_store'
+
+  // El pago en el local convive con delivery: el repartidor cobra en la
+  // puerta (`store.delivery.courierCollects`), así que "pagás al retirar" es
+  // falso cuando el pedido se entrega a domicilio. Un solo lugar para las
+  // tres apariciones de este texto, para no dejar dos redacciones distintas
+  // de la misma regla en la misma pantalla. Sin nombrar un medio de pago
+  // puntual (efectivo/tarjeta): eso no lo sabemos desde acá.
+  const inStorePaymentLabel = effectiveDeliveryMethod === 'delivery' ? 'Pagar al recibirlo' : 'Pagar al retirar'
+  const inStorePaymentHint =
+    effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen.' : 'Reservás el pedido ahora y pagás en el local.'
+
   if (!hydrated) return null
 
   if (lines.length === 0) {
@@ -178,7 +204,7 @@ export function CheckoutForm({
             optionIds: l.optionIds,
             notes: l.notes ?? undefined,
           })),
-          paymentMethod: inStorePaymentEnabled ? paymentMethod : 'online',
+          paymentMethod: effectivePaymentMethod,
           customerName,
           customerPhone,
           customerEmail: customerEmail.trim() || undefined,
@@ -518,7 +544,7 @@ export function CheckoutForm({
         )}
       </Panel>
 
-      {inStorePaymentEnabled ? (
+      {bothPaymentMethodsAvailable ? (
         <Panel className="flex flex-col gap-3 p-4 sm:p-5">
           <h2 className="text-sm font-semibold">Cómo pagás</h2>
           <RadioGroup value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as PaymentMethod)}>
@@ -526,20 +552,28 @@ export function CheckoutForm({
               <span className="flex items-center gap-2.5">
                 <RadioGroupItem value="online" />
                 Pagar ahora online
+                <MercadoPago aria-hidden className="h-3.5 w-auto shrink-0" />
               </span>
               <span className="text-muted-foreground pl-6 text-xs">Con Mercado Pago, antes de que se prepare.</span>
             </Label>
             <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
               <span className="flex items-center gap-2.5">
                 <RadioGroupItem value="in_store" />
-                Pagar al retirar
+                {inStorePaymentLabel}
               </span>
-              <span className="text-muted-foreground pl-6 text-xs">Reservás el pedido ahora y pagás en el local.</span>
+              <span className="text-muted-foreground pl-6 text-xs">{inStorePaymentHint}</span>
             </Label>
           </RadioGroup>
         </Panel>
+      ) : onlinePaymentEnabled ? (
+        <p className="text-muted-foreground flex items-center gap-1.5 px-1 text-sm">
+          <MercadoPago aria-hidden className="h-3.5 w-auto shrink-0" />
+          Pagás online con Mercado Pago en el siguiente paso.
+        </p>
       ) : (
-        <p className="text-muted-foreground px-1 text-sm">Pagás online con Mercado Pago en el siguiente paso.</p>
+        <p className="text-muted-foreground px-1 text-sm">
+          {effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen.' : 'Pagás al retirar en el local.'}
+        </p>
       )}
 
       <Panel className="flex flex-col gap-1.5 p-4 sm:p-5">
@@ -600,10 +634,10 @@ export function CheckoutForm({
                 <Loader2 className="size-4 animate-spin" aria-hidden />
                 Confirmando…
               </>
-            ) : paymentMethod === 'online' || !inStorePaymentEnabled ? (
+            ) : effectivePaymentMethod === 'online' ? (
               'Ir a pagar'
             ) : (
-              'Confirmar pedido · Pagás al retirar'
+              `Confirmar pedido · ${effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen' : 'Pagás al retirar'}`
             )}
           </Button>
         </div>

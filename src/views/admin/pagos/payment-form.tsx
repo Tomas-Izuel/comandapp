@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
+import { MercadoPago } from '@/components/ui/mercadopago'
 import { requestPaymentCredentialsChangeAction, requestPaymentSupportAction } from '@/controllers/admin.actions'
 import { ConfirmWithCode, type ConfirmWithCodeHandle } from '@/views/admin/shared/confirm-with-code'
 import type { PaymentConnectionStatus } from '@/controllers/admin.controller'
@@ -145,31 +146,37 @@ export function PaymentForm({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="border-border rounded-lg border p-4">
-        <p className="text-muted-foreground text-[0.6875rem] font-medium tracking-[0.08em] uppercase">Estado</p>
-        {status.connected ? (
-          <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            <span className="bg-primary/10 text-primary rounded-pill px-2.5 py-0.5 text-xs font-medium">Conectado</span>
-            <span
-              className={
-                // Prueba usa `--warning` (F-16, resuelto): no hay nada roto,
-                // pero cobrar de verdad con un token de prueba sí lo estaría —
-                // por eso ni el gris neutral de `muted` ni el rojo de
-                // `destructive` encajan acá.
-                status.isSandbox
-                  ? 'text-warning-foreground bg-warning/20 rounded-pill px-2.5 py-0.5 text-xs font-medium'
-                  : 'bg-muted text-muted-foreground rounded-pill px-2.5 py-0.5 text-xs font-medium'
-              }
-            >
-              {status.isSandbox ? 'Modo prueba' : 'Modo real'}
-            </span>
-            {status.accessTokenPreview ? (
-              <span className="text-muted-foreground font-mono text-xs">{status.accessTokenPreview}</span>
-            ) : null}
-          </div>
-        ) : (
-          <p className="mt-1.5 text-sm">Todavía no conectaste una cuenta de Mercado Pago.</p>
-        )}
+      <div className="border-border flex items-start gap-3 rounded-lg border p-4">
+        {/* Un solo lugar en toda la pantalla donde aparece el isotipo: acá,
+            anclando el estado de la conexión — no repetido en cada línea de
+            texto que ya dice "Mercado Pago". */}
+        <MercadoPago aria-hidden className="mt-0.5 h-5 w-auto shrink-0" />
+        <div className="min-w-0">
+          <p className="text-muted-foreground text-[0.6875rem] font-medium tracking-[0.08em] uppercase">Estado</p>
+          {status.connected ? (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <span className="bg-primary/10 text-primary rounded-pill px-2.5 py-0.5 text-xs font-medium">Conectado</span>
+              <span
+                className={
+                  // Prueba usa `--warning` (F-16, resuelto): no hay nada roto,
+                  // pero cobrar de verdad con un token de prueba sí lo estaría —
+                  // por eso ni el gris neutral de `muted` ni el rojo de
+                  // `destructive` encajan acá.
+                  status.isSandbox
+                    ? 'text-warning-foreground bg-warning/20 rounded-pill px-2.5 py-0.5 text-xs font-medium'
+                    : 'bg-muted text-muted-foreground rounded-pill px-2.5 py-0.5 text-xs font-medium'
+                }
+              >
+                {status.isSandbox ? 'Modo prueba' : 'Modo real'}
+              </span>
+              {status.accessTokenPreview ? (
+                <span className="text-muted-foreground font-mono text-xs">{status.accessTokenPreview}</span>
+              ) : null}
+            </div>
+          ) : (
+            <p className="mt-1.5 text-sm">Todavía no conectaste una cuenta de Mercado Pago.</p>
+          )}
+        </div>
       </div>
 
       <div>

@@ -25,6 +25,7 @@ import { useAddFeedback } from '@/views/storefront/use-add-feedback'
 import { storeHref, useStoreBasePath } from '@/views/storefront/store-base-path'
 import { useCart } from '@/lib/cart'
 import { formatCentsCompact } from '@/lib/money'
+import { canTakeOrders } from '@/lib/store-availability'
 import { cn } from '@/lib/utils'
 import type { MenuOptionGroup, MenuProduct, StoreWithBranding } from '@/models/types'
 
@@ -59,7 +60,10 @@ export function ProductDetailView({
   const [selected, setSelected] = React.useState<Record<number, number[]>>({})
   const [notes, setNotes] = React.useState('')
 
-  const canOrder = store.acceptingOrders && product.isAvailable
+  // No solo "el dueño no cerró" (`acceptingOrders`): sin ningún medio de
+  // cobro conectado tampoco hay forma de confirmar el pedido después.
+  const storeCanTakeOrders = canTakeOrders(store)
+  const canOrder = storeCanTakeOrders && product.isAvailable
 
   function toggleOption(group: MenuOptionGroup, optionId: number) {
     setSelected((prev) => {
@@ -123,7 +127,7 @@ export function ProductDetailView({
   // Todo estado de "no se puede" se dice con la palabra, nunca solo con el
   // botón deshabilitado — incluida la falta de opciones, que antes solo se
   // veía en la lista de errores de más abajo.
-  const ctaLabel = !store.acceptingOrders
+  const ctaLabel = !storeCanTakeOrders
     ? 'El local no está tomando pedidos'
     : !product.isAvailable
       ? 'No disponible'
@@ -177,8 +181,8 @@ export function ProductDetailView({
         </div>
       </div>
 
-      {!store.acceptingOrders ? <ClosedNotice storeName={store.name} className="mt-4" /> : null}
-      {store.acceptingOrders && !product.isAvailable ? (
+      {!storeCanTakeOrders ? <ClosedNotice storeName={store.name} className="mt-4" /> : null}
+      {storeCanTakeOrders && !product.isAvailable ? (
         <p className="text-muted-foreground mx-auto w-full max-w-(--content-max) px-4 pt-4 text-sm sm:px-6">
           Este producto no está disponible en este momento.
         </p>
