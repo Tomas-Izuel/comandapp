@@ -19,6 +19,7 @@ import { storeSettingsInputSchema, type StoreSettingsInput } from '@/models/sche
 import { scaleUpInt } from '@/lib/money'
 import { deliveryFeeFor, deliveryMinutesFor } from '@/lib/delivery'
 import { Price } from '@/views/shared/money'
+import { MoneyInput } from '@/views/shared/money-input'
 import { PanelHeading } from '@/views/admin/page-frame'
 import { ConfirmWithCode, type ConfirmWithCodeHandle } from '@/views/admin/shared/confirm-with-code'
 import type { Store, StoreDelivery } from '@/models/types'
@@ -151,15 +152,20 @@ function Field({
 /**
  * Input numérico con borrador en string (F-10): un input controlado por un
  * `number` fuerza "0" apenas se borra el campo para tipear de nuevo. Acá se
- * ve el string tal cual; la conversión a entero (centavos o unidades) pasa
- * por `Math.round` — nunca queda un float a mitad de camino — recién cuando
- * el string es un número válido.
+ * ve el string tal cual; la conversión a entero pasa por `Math.round` — nunca
+ * queda un float a mitad de camino — recién cuando el string es un número
+ * válido.
+ *
+ * Los cuatro campos de plata (pedido mínimo, costo de envío, envío gratis
+ * desde, mínimo para envío) usan `MoneyInput` en vez de este componente: ese
+ * ya resuelve el prefijo "$" y el agrupado de miles. Lo que queda acá son
+ * unidades simples (minutos, cantidad de pedidos, el multiplicador de
+ * demanda), así que ya no hace falta un factor de escala.
  */
 function DraftNumberInput({
   id,
   value,
   onValueChange,
-  scale = 1,
   errorId,
   invalid,
   ...props
@@ -167,11 +173,10 @@ function DraftNumberInput({
   id: string
   value: number
   onValueChange: (n: number) => void
-  scale?: number
   errorId?: string
   invalid?: boolean
 } & Omit<React.ComponentProps<typeof Input>, 'id' | 'value' | 'onChange'>) {
-  const [draft, setDraft] = useState(() => String(value / scale))
+  const [draft, setDraft] = useState(() => String(value))
   return (
     <Input
       id={id}
@@ -187,7 +192,7 @@ function DraftNumberInput({
           return
         }
         const parsed = Number(raw)
-        if (Number.isFinite(parsed)) onValueChange(Math.round(parsed * scale))
+        if (Number.isFinite(parsed)) onValueChange(Math.round(parsed))
       }}
       {...props}
     />
@@ -624,19 +629,17 @@ export function SettingsForm({ storeId, store, role }: { storeId: number; store:
             />
           )}
         />
-        <div className="mt-3 max-w-2xs">
+        <div className="mt-3 max-w-xs">
           <Field htmlFor={minOrderId} label="Pedido mínimo" error={errors.minOrderCents?.message} errorId={`${minOrderId}-error`}>
             <Controller
               control={control}
               name="minOrderCents"
               render={({ field }) => (
-                <DraftNumberInput
+                <MoneyInput
                   id={minOrderId}
-                  value={field.value}
-                  onValueChange={field.onChange}
-                  scale={100}
-                  min={0}
-                  step={1}
+                  cents={field.value}
+                  onCentsChange={field.onChange}
+                  currency={store.currency}
                   invalid={!!errors.minOrderCents}
                   errorId={errors.minOrderCents ? `${minOrderId}-error` : undefined}
                   className="h-10"
@@ -728,13 +731,11 @@ export function SettingsForm({ storeId, store, role }: { storeId: number; store:
                   control={control}
                   name="deliveryFeeCents"
                   render={({ field }) => (
-                    <DraftNumberInput
+                    <MoneyInput
                       id={deliveryFeeId}
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      scale={100}
-                      min={0}
-                      step={1}
+                      cents={field.value}
+                      onCentsChange={field.onChange}
+                      currency={store.currency}
                       invalid={!!errors.deliveryFeeCents}
                       errorId={errors.deliveryFeeCents ? `${deliveryFeeId}-error` : undefined}
                       className="h-10"
@@ -753,13 +754,11 @@ export function SettingsForm({ storeId, store, role }: { storeId: number; store:
                   control={control}
                   name="deliveryFreeFromCents"
                   render={({ field }) => (
-                    <DraftNumberInput
+                    <MoneyInput
                       id={deliveryFreeFromId}
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      scale={100}
-                      min={0}
-                      step={1}
+                      cents={field.value}
+                      onCentsChange={field.onChange}
+                      currency={store.currency}
                       invalid={!!errors.deliveryFreeFromCents}
                       errorId={errors.deliveryFreeFromCents ? `${deliveryFreeFromId}-error` : undefined}
                       className="h-10"
@@ -769,7 +768,7 @@ export function SettingsForm({ storeId, store, role }: { storeId: number; store:
               </Field>
             </div>
 
-            <div className="max-w-2xs">
+            <div className="max-w-xs">
               <Field
                 htmlFor={deliveryMinOrderId}
                 label="Pedido mínimo para envío"
@@ -781,13 +780,11 @@ export function SettingsForm({ storeId, store, role }: { storeId: number; store:
                   control={control}
                   name="deliveryMinOrderCents"
                   render={({ field }) => (
-                    <DraftNumberInput
+                    <MoneyInput
                       id={deliveryMinOrderId}
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      scale={100}
-                      min={0}
-                      step={1}
+                      cents={field.value}
+                      onCentsChange={field.onChange}
+                      currency={store.currency}
                       invalid={!!errors.deliveryMinOrderCents}
                       errorId={errors.deliveryMinOrderCents ? `${deliveryMinOrderId}-error` : undefined}
                       className="h-10"

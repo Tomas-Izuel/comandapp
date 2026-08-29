@@ -24,6 +24,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { ConfirmDeleteButton } from './confirm-delete-button'
 import { ProductImageField } from './product-image-field'
 import { OptionGroupsEditor } from './option-groups-editor'
+import { MoneyInput } from '@/views/shared/money-input'
 import { createProductAction, deleteProductAction, updateProductAction } from '@/controllers/catalog.actions'
 import { productInputSchema, type ProductInput } from '@/models/schemas/catalog.schema'
 import type { MenuCategory, MenuProduct } from '@/models/types'
@@ -74,15 +75,15 @@ function toFormValues(product: MenuProduct | null, defaultCategoryId: number | n
  * Un input controlado por un `number` fuerza "0" apenas se borra el campo
  * para tipear de nuevo (F-10): `Number('') === 0` y el cursor queda detrás de
  * un cero que nadie tipeó. Acá se ve el string tal cual lo escribe el dueño;
- * la conversión a entero (centavos o minutos) pasa por `Math.round` — nunca
- * queda un float a mitad de camino — y solo se aplica cuando el string es un
- * número válido.
+ * la conversión a entero (minutos) pasa por `Math.round` — nunca queda un
+ * float a mitad de camino — y solo se aplica cuando el string es un número
+ * válido. El precio ya no pasa por acá: usa `MoneyInput`, que hace el mismo
+ * truco del borrador pero además formatea centavos.
  */
 function DraftNumberField({
   id,
   value,
   onValueChange,
-  scale = 1,
   errorId,
   invalid,
   ...props
@@ -90,11 +91,10 @@ function DraftNumberField({
   id: string
   value: number
   onValueChange: (n: number) => void
-  scale?: number
   errorId?: string
   invalid?: boolean
 } & Omit<React.ComponentProps<typeof Input>, 'id' | 'value' | 'onChange'>) {
-  const [draft, setDraft] = useState(() => String(value / scale))
+  const [draft, setDraft] = useState(() => String(value))
 
   return (
     <Input
@@ -111,7 +111,7 @@ function DraftNumberField({
           return
         }
         const parsed = Number(raw)
-        if (Number.isFinite(parsed)) onValueChange(Math.round(parsed * scale))
+        if (Number.isFinite(parsed)) onValueChange(Math.round(parsed))
       }}
       {...props}
     />
@@ -141,8 +141,10 @@ export function ProductDrawer({
 }) {
   // El padre remonta este componente con una `key` distinta por producto (ver
   // category-list.tsx): así el form arranca de cero al abrir con un producto
-  // distinto, sin sincronizar estado a mano en un efecto.
-  const [currentProductId, setCurrentProductId] = useState<number | null>(product?.id ?? null)
+  // distinto, sin sincronizar estado a mano en un efecto. Como ahora el
+  // drawer se cierra al crear (ver onSubmit), `product` nunca pasa de `null`
+  // a un valor mientras el drawer sigue abierto: el modo se puede derivar de
+  // la prop en vez de guardarlo aparte.
   const [pending, startTransition] = useTransition()
 
   const {
@@ -167,12 +169,13 @@ export function ProductDrawer({
   const categorySelectId = useId()
   const priceId = useId()
   const prepId = useId()
+  const availableId = useId()
   const priceErrorId = `${priceId}-error`
   const prepErrorId = `${prepId}-error`
   const nameErrorId = `${nameId}-error`
   const rootErrorId = useId()
 
-  const mode = currentProductId === null ? 'create' : 'edit'
+  const mode = product === null ? 'create' : 'edit'
   const name = useWatch({ control, name: 'name' })
   const isAvailable = useWatch({ control, name: 'isAvailable' })
 
@@ -185,19 +188,22 @@ export function ProductDrawer({
       return
     }
     startTransition(async () => {
-      if (currentProductId === null) {
+      if (product === null) {
         const result = await createProductAction(storeId, values)
         if (!result.ok) {
           applyServerErrors(result)
           return
         }
-        setCurrentProductId(result.data)
         onSaved()
-        toast.success('Producto creado. Ahora podés agregar sus modificadores.')
+        // Los modificadores necesitan un producto ya guardado (ver
+        // OptionGroupsEditor), y ese camino se corta acá porque el drawer se
+        // cierra: por eso el aviso dice explícitamente dónde retomarlo.
+        toast.success('Producto creado. Para sumarle modificadores, abrilo de nuevo desde la lista.')
+        onOpenChange(false)
         return
       }
 
-      const result = await updateProductAction(storeId, currentProductId, values)
+      const result = await updateProductAction(storeId, product.id, values)
       if (!result.ok) {
         applyServerErrors(result)
         return
@@ -330,13 +336,10 @@ export function ProductDrawer({
                       control={control}
                       name="priceCents"
                       render={({ field }) => (
-                        <DraftNumberField
+                        <MoneyInput
                           id={priceId}
-                          value={field.value}
-                          onValueChange={field.onChange}
-                          scale={100}
-                          min={0}
-                          step={1}
+                          cents={field.value}
+                          onCentsChange={field.onChange}
                           invalid={!!errors.priceCents}
                           errorId={errors.priceCents ? priceErrorId : undefined}
                           className="h-10"
@@ -376,20 +379,35 @@ export function ProductDrawer({
                   </div>
                 </div>
 
-                {/* Botón real de tamaño táctil (44px, F-04): el Checkbox de Radix no es un
-                    input nativo, así que un <label> alrededor no lo activa al hacer click
-                    en el texto. Acá el botón entero es el control; el Checkbox de adentro
-                    es solo el indicador visual. */}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => setValue('isAvailable', !isAvailable, { shouldValidate: true })}
-                  aria-pressed={isAvailable}
-                  className="flex h-11 w-fit items-center justify-start gap-2 px-2"
+                {/*
+                  Antes esto era un `<Button>` de shadcn con un `<Checkbox>` de
+                  Radix adentro "como indicador visual" — pero el Checkbox
+                  también renderiza su propio `<button role="checkbox">`, así
+                  que quedaba un `<button>` dentro de otro `<button>`: HTML
+                  inválido y error de hidratación garantizado en React
+                  (`tabIndex={-1}` lo saca del tab order, pero sigue siendo un
+                  elemento interactivo anidado).
+
+                  Mismo arreglo que `ToggleField` en
+                  `src/views/admin/ajustes/settings-form.tsx` (líneas
+                  200-268): un solo control real, el Checkbox con `id`, y la
+                  fila entera como `<label htmlFor>` asociado a ese id. Acá no
+                  se reusa ese componente porque es una fila de ancho completo
+                  con `hint` de dos líneas, y esto es un control compacto en
+                  línea (`w-fit`) sin hint — la forma difiere lo suficiente
+                  como para no forzar una abstracción compartida.
+                */}
+                <label
+                  htmlFor={availableId}
+                  className="group/field-label has-[:focus-visible]:ring-ring/50 flex h-11 w-fit cursor-pointer items-center gap-2 rounded-lg px-2 transition-colors hover:bg-muted has-[:focus-visible]:ring-3"
                 >
-                  <Checkbox checked={isAvailable} onCheckedChange={() => {}} tabIndex={-1} className="pointer-events-none" />
+                  <Checkbox
+                    id={availableId}
+                    checked={isAvailable}
+                    onCheckedChange={(v) => setValue('isAvailable', v === true, { shouldValidate: true })}
+                  />
                   <span className="text-sm font-normal">Disponible para pedir</span>
-                </Button>
+                </label>
 
                 {errors.root ? (
                   <p id={rootErrorId} role="alert" className="text-destructive text-sm">
@@ -400,27 +418,38 @@ export function ProductDrawer({
             </div>
           </form>
 
-          <div className="border-border border-t pt-4 pb-6">
-            <p className="mb-3 text-sm font-medium">Modificadores</p>
-            <OptionGroupsEditor
-              key={currentProductId ?? 'new'}
-              storeId={storeId}
-              currency={currency}
-              productId={currentProductId}
-              initialGroups={product?.optionGroups}
-            />
-          </div>
+          {/*
+            En modo creación este producto todavía no existe en el servidor
+            (`OptionGroupsEditor` necesita un `productId`), y ahora que
+            guardar cierra el drawer (ver onSubmit) esa sesión nunca llega a
+            tenerlo: no hay ningún momento en que la sección se vuelva
+            usable. Mostrar el panel igual con un cartel de "guardá primero"
+            sería un callejón permanente, así que en creación directamente
+            no se muestra — el toast de éxito ya explica cómo volver acá.
+          */}
+          {product ? (
+            <div className="border-border border-t pt-4 pb-6">
+              <p className="mb-3 text-sm font-medium">Modificadores</p>
+              <OptionGroupsEditor
+                key={product.id}
+                storeId={storeId}
+                currency={currency}
+                productId={product.id}
+                initialGroups={product.optionGroups}
+              />
+            </div>
+          ) : null}
         </ScrollArea>
 
         <DrawerFooter className="flex-row justify-between border-t pt-4">
           <div>
-            {mode === 'edit' && currentProductId !== null ? (
+            {product ? (
               <ConfirmDeleteButton
                 itemLabel={`"${name}"`}
                 description="Deja de verse en la carta. Los pedidos que ya lo tienen no cambian: guardan el nombre y el precio de cuando se pidieron."
                 size="sm"
                 onConfirm={async () => {
-                  const result = await deleteProductAction(storeId, currentProductId)
+                  const result = await deleteProductAction(storeId, product.id)
                   if (result.ok) {
                     onSaved()
                     onOpenChange(false)
@@ -433,7 +462,7 @@ export function ProductDrawer({
           <div className="flex gap-2">
             <DrawerClose asChild>
               <Button type="button" variant="outline">
-                {mode === 'create' && currentProductId !== null ? 'Listo' : 'Cancelar'}
+                Cancelar
               </Button>
             </DrawerClose>
             <Button type="submit" form="product-form" disabled={pending} className="gap-2">

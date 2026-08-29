@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Button } from '@/components/ui/button'
 import { formatCentsCompact } from '@/lib/money'
+import { MoneyInput } from '@/views/shared/money-input'
 import { ConfirmDeleteButton } from './confirm-delete-button'
 import {
   createOptionAction,
@@ -30,48 +31,6 @@ function describeSelectionRule(minSelect: number, maxSelect: number): string {
   if (minSelect === 0) return `Elegí hasta ${maxSelect}`
   if (minSelect === maxSelect) return minSelect === 1 ? 'Elegí 1' : `Elegí ${minSelect}`
   return `Elegí entre ${minSelect} y ${maxSelect}`
-}
-
-/**
- * Input de precio con borrador en string (F-10): un input controlado por un
- * `number` fuerza "0" apenas se borra el campo para tipear de nuevo. Acá se
- * ve el string tal cual, y la conversión a centavos pasa por `Math.round`
- * — nunca queda un float a mitad de camino — recién cuando el string es un
- * número válido.
- */
-function PriceDeltaInput({
-  id,
-  cents,
-  onCentsChange,
-  className,
-}: {
-  id?: string
-  cents: number
-  onCentsChange: (cents: number) => void
-  className?: string
-}) {
-  const [draft, setDraft] = useState(() => String(cents / 100))
-  return (
-    <Input
-      id={id}
-      type="text"
-      inputMode="decimal"
-      placeholder="Diferencia de precio"
-      aria-label={id ? undefined : 'Diferencia de precio'}
-      value={draft}
-      onChange={(e) => {
-        const raw = e.target.value
-        setDraft(raw)
-        if (raw.trim() === '') {
-          onCentsChange(0)
-          return
-        }
-        const parsed = Number(raw)
-        if (Number.isFinite(parsed)) onCentsChange(Math.round(parsed * 100))
-      }}
-      className={className}
-    />
-  )
 }
 
 /**
@@ -392,7 +351,13 @@ function NewOptionForm({
         onChange={(e) => setName(e.target.value)}
         className="h-9 flex-1"
       />
-      <PriceDeltaInput cents={priceDeltaCents} onCentsChange={setPriceDeltaCents} className="h-9 sm:w-36" />
+      <MoneyInput
+        cents={priceDeltaCents}
+        onCentsChange={setPriceDeltaCents}
+        allowNegative
+        aria-label="Diferencia de precio"
+        className="h-9 sm:w-36"
+      />
       <div className="flex gap-2">
         <Button type="button" size="sm" disabled={pending || !name.trim()} onClick={handleCreate} className="gap-1.5">
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : null}
@@ -460,7 +425,13 @@ function OptionRow({
         <Label htmlFor={priceId} className="sr-only">
           Diferencia de precio
         </Label>
-        <PriceDeltaInput id={priceId} cents={priceDeltaCents} onCentsChange={setPriceDeltaCents} className="h-8 w-28 text-sm" />
+        <MoneyInput
+          id={priceId}
+          cents={priceDeltaCents}
+          onCentsChange={setPriceDeltaCents}
+          allowNegative
+          className="h-8 w-32 text-sm"
+        />
         <Button type="button" size="sm" disabled={pending} onClick={handleSave}>
           Guardar
         </Button>
