@@ -27,14 +27,37 @@ import { PHASE_DEVELOPMENT_SERVER } from 'next/constants'
  * Cubre los tres entornos, y el `pathname` sigue acotado a objetos PÚBLICOS de
  * Storage, que es lo que realmente limita el alcance.
  */
+/**
+ * `search: ''` NO ES COSMÉTICO: sin esa clave, el optimizador acepta CUALQUIER
+ * query string en la URL de origen. El matcher de Next es literal
+ * (`next/dist/shared/lib/match-remote-pattern.js`):
+ *
+ *     if (pattern.search !== undefined) { if (pattern.search !== url.search) ... }
+ *
+ * `undefined` significa "no comparo", así que `?v=1` … `?v=1000` sobre UNA sola
+ * foto legítima son mil cache keys distintas y mil transformaciones. En Hobby
+ * el cupo es 5K/mes y pasarse no se cobra: devuelve **402 y la `<Image>` cae al
+ * `alt`**. O sea la carta sin fotos, que en este producto es apagar el motor de
+ * venta. `search: ''` exige que la URL de origen no traiga query string, que es
+ * exactamente la forma de un objeto público de Storage.
+ *
+ * Y el hostname va PINNEADO al proyecto real: `*.supabase.co` matchea cualquier
+ * proyecto de Supabase del mundo, así que un tercero podía hacernos pagar el
+ * cupo transformando imágenes que hostea él.
+ */
 const remotePatterns: NonNullable<NextConfig['images']>['remotePatterns'] = [
   // Proyecto hosted (producción y previews).
-  { protocol: 'https', hostname: '*.supabase.co', pathname: '/storage/v1/object/public/**' },
+  {
+    protocol: 'https',
+    hostname: 'xyjracoaufarsnhurhdc.supabase.co',
+    pathname: '/storage/v1/object/public/**',
+    search: '',
+  },
   // Stack local del CLI de Supabase. Las dos formas: `supabase start` imprime
   // `127.0.0.1`, pero un `.env` escrito a mano suele decir `localhost`, y para
   // `next/image` son dos hosts distintos.
-  { protocol: 'http', hostname: '127.0.0.1', port: '54321', pathname: '/storage/v1/object/public/**' },
-  { protocol: 'http', hostname: 'localhost', port: '54321', pathname: '/storage/v1/object/public/**' },
+  { protocol: 'http', hostname: '127.0.0.1', port: '54321', pathname: '/storage/v1/object/public/**', search: '' },
+  { protocol: 'http', hostname: 'localhost', port: '54321', pathname: '/storage/v1/object/public/**', search: '' },
 ]
 
 /**
@@ -204,6 +227,18 @@ const nextConfig: NextConfig = {
     remotePatterns,
     // El catálogo se ve casi siempre en un celular; no hace falta servir 3840px.
     deviceSizes: [360, 420, 640, 828, 1080, 1200, 1920],
+    /**
+     * Un año. El default de Next son 4 horas (`minimumCacheTTL: 14400`,
+     * verificado en `image-config.js`) y Vercel **factura cada MISS y cada
+     * STALE**, así que con el default el mismo catálogo se re-transforma seis
+     * veces por día para siempre: una tienda de 40 productos proyecta seis
+     * cifras de transformaciones al mes contra un cupo de 5K.
+     *
+     * Un TTL largo es correcto acá, no un atajo: los objetos de Storage se
+     * suben con `upsert: false` y path UUID, así que el contenido de una URL
+     * dada NUNCA cambia. Cambiar la foto de un producto genera una URL nueva.
+     */
+    minimumCacheTTL: 31536000,
   },
   headers,
 }
