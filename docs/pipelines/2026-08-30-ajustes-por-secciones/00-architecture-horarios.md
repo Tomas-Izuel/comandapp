@@ -1,10 +1,3 @@
----
-version: 1
-slug: "src-views-admin-ajustes-schedule-editor-tsx"
-primary_target: "src/views/admin/ajustes/schedule-editor.tsx"
-related_targets: ["src/app/admin/(app)/ajustes/horarios/page.tsx"]
----
-
 # Horario semanal como línea de tiempo
 
 **Modo Operate.** Reemplaza el estado de reposo del horario semanal en

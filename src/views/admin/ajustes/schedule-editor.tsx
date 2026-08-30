@@ -1,14 +1,15 @@
 'use client'
 
-import { useId, useMemo, useState, useTransition } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Info, Loader2, Plus, Trash2 } from 'lucide-react'
+import { Copy, Info, Loader2, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { PanelHeading } from '@/views/admin/page-frame'
+import { DayBar, computeWeekAxis, formatAxisHour } from '@/views/admin/ajustes/schedule-track'
 import {
   CancelScheduledOrdersDialog,
   type AffectedOrders,
@@ -68,7 +69,7 @@ function minutesToTime(totalMinutes: number): string {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
 }
 
-type DraftRange = { id: string; opensAt: string; closesAt: string }
+export type DraftRange = { id: string; opensAt: string; closesAt: string }
 
 function randomId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `r${Math.random().toString(36).slice(2)}`
@@ -253,6 +254,54 @@ function buildInitialWeek(weekly: StoreHoursRange[]): Record<number, DraftRange[
   return week
 }
 
+/**
+ * Texto de la fila en reposo. Crudo del draft (`opensAt`/`closesAt`), no
+ * minutos parseados: el `<input type="time">` ya garantiza HH:MM o vacío, así
+ * que no hace falta pasar por `draftRangeToDuration` para mostrar algo legible
+ * incluso con un rango a medio cargar.
+ */
+function formatDaySummary(ranges: DraftRange[]): string {
+  if (ranges.length === 0) return 'Cerrado'
+  return ranges.map((r) => `${r.opensAt || '--:--'} a ${r.closesAt || '--:--'}`).join(', ')
+}
+
+/**
+ * "Copiar a…": la carga inicial es la única vez que esta pantalla se usa en
+ * serio (brief de superficie); sin esto son siete días a mano. Copia
+ * REEMPLAZA los rangos del destino, no los mezcla — mismo criterio que
+ * "Agregar excepción" reemplaza en vez de acumular. Queda abierto después de
+ * cada click a propósito: replicar un horario a los siete días no debería
+ * obligar a reabrir el menú siete veces.
+ */
+function CopyToControl({ sourceDay, onCopy }: { sourceDay: number; onCopy: (targetDay: number) => void }) {
+  const [open, setOpen] = useState(false)
+  const targets = DAY_ORDER.filter((day) => day !== sourceDay)
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-fit gap-1.5"
+      >
+        <Copy className="size-3.5" aria-hidden />
+        Copiar a…
+      </Button>
+      {open ? (
+        <div role="group" aria-label={`Copiar el horario de ${DAY_LABELS[sourceDay]} a`} className="flex flex-wrap gap-1.5">
+          {targets.map((day) => (
+            <Button key={day} type="button" variant="secondary" onClick={() => onCopy(day)} className="px-3 text-xs">
+              {DAY_LABELS[day]}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function WeekEditor({
   storeId,
   initialWeekly,
@@ -266,8 +315,33 @@ function WeekEditor({
   const [week, setWeek] = useState(() => buildInitialWeek(initialWeekly))
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+  // Un solo día editable a la vez: abrir otro cierra el anterior solo, porque
+  // los dos leen y escriben la misma variable.
+  const [openDay, setOpenDay] = useState<number | null>(null)
+  // Acotado a la lista de rangos (sin la cabecera con "Listo"): así el foco de
+  // apertura aterriza en el primer campo editable, nunca en ese botón (03-review.md, #2).
+  const rangesContainerRef = useRef<HTMLDivElement | null>(null)
+  // Un botón de `DayBar` por día, para devolver el foco a la fila que abrió el
+  // panel en vez de dejarlo huérfano en `<body>` al cerrarlo con "Listo".
+  const dayTriggerRefs = useRef(new Map<number, HTMLButtonElement>())
+  const previousOpenDayRef = useRef<number | null>(null)
 
   const isEmpty = DAY_ORDER.every((day) => (week[day] ?? []).length === 0)
+
+  // El eje de la pista: se recalcula en cada tecla porque es la MISMA fuente
+  // que ya recalcula el explicador de abajo. Un rango a medio completar
+  // (`draftRangeToDuration` → null) se ignora acá, no rompe el eje de los
+  // demás.
+  const axis = useMemo(() => {
+    const flat: { opensAtMinute: number; durationMinutes: number }[] = []
+    for (const day of DAY_ORDER) {
+      for (const range of week[day] ?? []) {
+        const parsed = draftRangeToDuration(range)
+        if (parsed) flat.push(parsed)
+      }
+    }
+    return computeWeekAxis(flat)
+  }, [week])
 
   const warning = useMemo(() => {
     const flat: { dayOfWeek: number; opensAtMinute: number; durationMinutes: number }[] = []
@@ -279,6 +353,22 @@ function WeekEditor({
     }
     return computeLastOrderWarning(flat, maxPrepMinutes)
   }, [week, maxPrepMinutes])
+
+  // Foco al abrir/cerrar un día: sin esto, tocar la fila con teclado/lector de
+  // pantalla deja el foco huérfano en un botón que la edición reemplazó (o,
+  // antes de este arreglo, aterrizaba en "Listo" — que va ANTES en el DOM que
+  // los `<input type="time">` — así que un Enter de más cerraba el panel que
+  // el usuario recién había abierto, creyendo estar parado en un campo).
+  useEffect(() => {
+    if (openDay !== null) {
+      const firstField = rangesContainerRef.current?.querySelector<HTMLElement>('input[type="time"], button')
+      firstField?.focus()
+    } else if (previousOpenDayRef.current !== null) {
+      // Se cerró: el foco vuelve al disparador del día, no a <body>.
+      dayTriggerRefs.current.get(previousOpenDayRef.current)?.focus()
+    }
+    previousOpenDayRef.current = openDay
+  }, [openDay])
 
   function addRange(day: number) {
     setWeek((prev) => {
@@ -292,6 +382,10 @@ function WeekEditor({
   }
   function removeRange(day: number, id: string) {
     setWeek((prev) => ({ ...prev, [day]: (prev[day] ?? []).filter((r) => r.id !== id) }))
+  }
+  function copyRangesTo(sourceDay: number, targetDay: number) {
+    setWeek((prev) => ({ ...prev, [targetDay]: (prev[sourceDay] ?? []).map((r) => ({ ...r, id: randomId() })) }))
+    toast.success(`Copiado a ${DAY_LABELS[targetDay]}`)
   }
 
   function handleSave() {
@@ -340,16 +434,48 @@ function WeekEditor({
         </div>
       ) : null}
 
+      {axis ? (
+        <p className="text-muted-foreground text-xs">
+          Franja mostrada: <span className="tabular">{formatAxisHour(axis.start)}</span> a{' '}
+          <span className="tabular">{formatAxisHour(axis.end)}</span>.
+        </p>
+      ) : null}
+
       <div className="flex flex-col gap-3">
         {DAY_ORDER.map((day) => {
           const ranges = week[day] ?? []
+
+          if (day !== openDay) {
+            const parsedRanges: { opensAtMinute: number; durationMinutes: number }[] = []
+            for (const range of ranges) {
+              const parsed = draftRangeToDuration(range)
+              if (parsed) parsedRanges.push(parsed)
+            }
+            return (
+              <DayBar
+                key={day}
+                ref={(el) => {
+                  if (el) dayTriggerRefs.current.set(day, el)
+                  else dayTriggerRefs.current.delete(day)
+                }}
+                label={DAY_LABELS[day]}
+                summary={formatDaySummary(ranges)}
+                ranges={parsedRanges}
+                axis={axis}
+                onOpen={() => setOpenDay(day)}
+              />
+            )
+          }
+
           return (
-            <div key={day} className="border-border rounded-lg border p-3">
+            <div key={day} className="border-border bg-card rounded-lg border p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <p className="text-sm font-semibold">{DAY_LABELS[day]}</p>
-                {ranges.length === 0 ? <span className="text-muted-foreground text-xs">Cerrado</span> : null}
+                <Button type="button" variant="ghost" size="sm" onClick={() => setOpenDay(null)}>
+                  Listo
+                </Button>
               </div>
-              <div className="flex flex-col gap-2">
+              <div ref={rangesContainerRef} className="flex flex-col gap-2">
                 {ranges.map((range) => (
                   <RangeRow
                     key={range.id}
@@ -359,17 +485,20 @@ function WeekEditor({
                     removeLabel={`Borrar este rango de ${DAY_LABELS[day]}`}
                   />
                 ))}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={ranges.length >= MAX_RANGES_PER_DAY}
-                  onClick={() => addRange(day)}
-                  className="w-fit gap-1.5"
-                >
-                  <Plus className="size-3.5" aria-hidden />
-                  Agregar rango
-                </Button>
+                <div className="flex flex-col items-start gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={ranges.length >= MAX_RANGES_PER_DAY}
+                    onClick={() => addRange(day)}
+                    className="w-fit gap-1.5"
+                  >
+                    <Plus className="size-3.5" aria-hidden />
+                    Agregar rango
+                  </Button>
+                  <CopyToControl sourceDay={day} onCopy={(targetDay) => copyRangesTo(day, targetDay)} />
+                </div>
               </div>
             </div>
           )
@@ -427,6 +556,8 @@ function OverrideRow({
   timezone,
   currency,
   draft,
+  isOpen,
+  onToggle,
   onSaved,
   onRemoved,
   onDiscard,
@@ -435,6 +566,9 @@ function OverrideRow({
   timezone: string
   currency: string
   draft: OverrideDraft
+  /** Ignorado si `draft.isNew`: una excepción recién creada siempre se ve entera, no hay nada que resumir todavía. */
+  isOpen: boolean
+  onToggle: () => void
   onSaved: (saved: OverrideDraft) => void
   onRemoved: () => void
   onDiscard: () => void
@@ -446,6 +580,29 @@ function OverrideRow({
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [removing, setRemoving] = useState(false)
+
+  // Mismo tratamiento de foco que `WeekEditor` (03-review.md, hallazgo #3):
+  // esta fila copió el patrón de reposo/apertura pero no el de foco, así que
+  // expandir con teclado dejaba el foco huérfano en `<body>`.
+  const formContainerRef = useRef<HTMLDivElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const wasOpenRef = useRef(isOpen)
+
+  useEffect(() => {
+    if (draft.isNew) return // siempre se ve entera: no hay transición reposo↔abierto que atender
+    if (isOpen && !wasOpenRef.current) {
+      // Se acaba de expandir: al primer campo real, no a "Listo"/"Quitar
+      // excepción" que van antes en el DOM.
+      const firstField = formContainerRef.current?.querySelector<HTMLElement>(
+        'input[type="date"], input[type="checkbox"], input[type="time"]',
+      )
+      firstField?.focus()
+    } else if (!isOpen && wasOpenRef.current) {
+      // Se acaba de colapsar: el foco vuelve a la fila que la abrió.
+      triggerRef.current?.focus()
+    }
+    wasOpenRef.current = isOpen
+  }, [isOpen, draft.isNew])
 
   // Diálogo destructivo: solo se dispara al CERRAR una fecha, nunca al
   // ajustar rangos o al quitar la excepción (fuera de alcance a propósito —
@@ -564,9 +721,29 @@ function OverrideRow({
   const dateLabel = date
     ? new Intl.DateTimeFormat('es-AR', { timeZone: timezone, day: 'numeric', month: 'long' }).format(zonedDayStart(date, timezone))
     : ''
+  const statusText = isClosed ? 'Cerrado todo el día' : formatDaySummary(ranges)
+
+  // Reposo compactado a una línea (brief de superficie): una excepción ya
+  // guardada se abre al tocarla, igual que un día de la semana. Una recién
+  // creada (`isNew`) no tiene nada que resumir todavía, así que se ve entera
+  // sin importar `isOpen`.
+  if (!draft.isNew && !isOpen) {
+    return (
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={onToggle}
+        aria-label={`${dateLabel}, ${statusText}`}
+        className="border-border bg-card hover:bg-muted focus-visible:ring-ring flex min-h-11 w-full items-center justify-between gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
+      >
+        <span className="text-sm font-semibold">{dateLabel}</span>
+        <span className="tabular text-sm text-muted-foreground">{statusText}</span>
+      </button>
+    )
+  }
 
   return (
-    <div className="border-border rounded-lg border p-3">
+    <div ref={formContainerRef} className="border-border rounded-lg border p-3">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-col gap-1">
           <Label htmlFor={dateId} className="sr-only">
@@ -586,10 +763,15 @@ function OverrideRow({
           <span className="text-sm">Cerrado todo el día</span>
         </label>
         {!draft.isNew ? (
-          <Button type="button" variant="ghost" size="sm" disabled={removing} onClick={handleRemove} className="ml-auto gap-1.5">
-            {removing ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
-            Quitar excepción
-          </Button>
+          <div className="ml-auto flex items-center gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={onToggle}>
+              Listo
+            </Button>
+            <Button type="button" variant="ghost" size="sm" disabled={removing} onClick={handleRemove} className="gap-1.5">
+              {removing ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+              Quitar excepción
+            </Button>
+          </div>
         ) : (
           <Button type="button" variant="ghost" size="sm" onClick={onDiscard} className="ml-auto">
             Cancelar
@@ -677,6 +859,8 @@ function OverridesEditor({
     [...initialOverrides].sort((a, b) => a.date.localeCompare(b.date)).map(overrideFromModel),
   )
   const [draftKey, setDraftKey] = useState<string | null>(null)
+  // Igual que la semana: una excepción abierta a la vez.
+  const [openKey, setOpenKey] = useState<string | null>(null)
 
   function addDraft() {
     if (draftKey) return // un borrador a la vez alcanza
@@ -712,12 +896,16 @@ function OverridesEditor({
               timezone={timezone}
               currency={currency}
               draft={draft}
+              isOpen={openKey === draft.key}
+              onToggle={() => setOpenKey((prev) => (prev === draft.key ? null : draft.key))}
               onSaved={(saved) => {
                 setOverrides((prev) => {
                   const withoutDraft = prev.filter((o) => o.key !== draft.key)
                   return [...withoutDraft, { ...saved, key: saved.date }].sort((a, b) => a.date.localeCompare(b.date))
                 })
                 if (draft.isNew) setDraftKey(null)
+                // Vuelve al reposo: ni la carga inicial ni un ajuste puntual justifican dejarla abierta después de guardar.
+                setOpenKey(null)
               }}
               onRemoved={() => setOverrides((prev) => prev.filter((o) => o.key !== draft.key))}
               onDiscard={() => {

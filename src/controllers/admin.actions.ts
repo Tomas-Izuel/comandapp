@@ -14,7 +14,14 @@ import { encryptSecret } from '@/lib/crypto/secrets'
 import { consumeRateLimit } from '@/models/rate-limit.model'
 import { RATE_LIMIT_POLICY } from '@/lib/rate-limit-policy'
 import { confirmationCodeSchema, type PendingChangeStarted } from '@/controllers/admin.controller'
-import { getStoreById, requireStoreMembership, updateStoreSettings, upsertBranding } from '@/models/store.model'
+import {
+  getStoreById,
+  requireStoreMembership,
+  updateStoreProfile,
+  updateStoreOrdering,
+  resumeAcceptingOrders,
+  upsertBranding,
+} from '@/models/store.model'
 import {
   consumePendingChange,
   createPendingChange,
@@ -32,8 +39,10 @@ import {
   storeHoursOverrideDateSchema,
   storeHoursOverrideInputSchema,
   storeHoursWeeklyInputSchema,
-  storeSettingsInputSchema,
-  type StoreSettingsInput,
+  storeProfileInputSchema,
+  storeOrderingInputSchema,
+  type StoreProfileInput,
+  type StoreOrderingInput,
 } from '@/models/schemas/store.schema'
 import { getStoreHoursData, setStoreHours, setStoreHoursOverride } from '@/models/store-hours.model'
 import { currentCommercialNight } from '@/lib/store-hours'
@@ -231,13 +240,40 @@ export async function signOutAction(): Promise<void> {
 // abajo (S-03).
 // ---------------------------------------------------------------------------
 
-export async function updateStoreSettingsAction(storeId: number, input: StoreSettingsInput): Promise<ActionResult> {
+export async function updateStoreProfileAction(storeId: number, input: StoreProfileInput): Promise<ActionResult> {
   return toActionResult(async () => {
     const id = storeIdSchema.parse(storeId)
     await requireStoreMembership(id)
-    const parsed = storeSettingsInputSchema.parse(input)
-    await updateStoreSettings(id, parsed)
-  }, 'admin.updateStoreSettings')
+    const parsed = storeProfileInputSchema.parse(input)
+    await updateStoreProfile(id, parsed)
+  }, 'admin.updateStoreProfile')
+}
+
+export async function updateStoreOrderingAction(storeId: number, input: StoreOrderingInput): Promise<ActionResult> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id)
+    const parsed = storeOrderingInputSchema.parse(input)
+    await updateStoreOrdering(id, parsed)
+  }, 'admin.updateStoreOrdering')
+}
+
+/**
+ * Reapertura de "Tomando pedidos". Simétrica a `pauseScheduledNightAction`
+ * (más abajo, junto a horarios) pero sin nada de lo que ese apagado necesita:
+ * prender nunca es destructivo —no cancela pedidos ni programados—, así que no
+ * lleva diálogo de confirmación, preview ni código por mail. No recibe `night`
+ * porque no hay nada que resolver: es simplemente `accepting_orders = true`.
+ *
+ * Sin `revalidatePath`: igual que `pauseScheduledNightAction`, el llamador
+ * (`ordering-form.tsx`) hace `router.refresh()` del lado del cliente después
+ * de que la acción resuelve.
+ */
+export async function resumeAcceptingOrdersAction(storeId: number): Promise<ActionResult> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await resumeAcceptingOrders(id)
+  }, 'admin.resumeAcceptingOrders')
 }
 
 // ---------------------------------------------------------------------------
@@ -511,7 +547,11 @@ export async function confirmPendingChangeAction(
       .eq('id', id)
 
     if (error) throw new Error(`No se pudo actualizar la política de cobro: ${error.message}`)
-    revalidatePath('/admin/ajustes')
+    // 'layout' (no solo la ruta exacta) porque el campo vive en
+    // /admin/ajustes/pedidos, una sub-ruta: sin el segundo argumento la
+    // confirmación por código no invalida esa página y el switch queda
+    // mostrando el valor viejo hasta el próximo refresh manual.
+    revalidatePath('/admin/ajustes', 'layout')
   }, 'admin.confirmPendingChange')
 }
 

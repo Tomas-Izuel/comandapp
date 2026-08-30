@@ -12,12 +12,12 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { geocodeAddressAction } from '@/controllers/geocoding.actions'
 import type { GeocodeCandidate } from '@/services/geocoding'
-import type { StoreSettingsInput } from '@/models/schemas/store.schema'
+import type { StoreProfileInput } from '@/models/schemas/store.schema'
 
 /**
  * Este archivo importa `leaflet`, que toca `window` apenas se lo importa
  * (detección de features de browser al cargar el módulo). Por eso NO se
- * importa nunca directo: `settings-form.tsx` lo carga con
+ * importa nunca directo: `profile-form.tsx` lo carga con
  * `dynamic(() => import(...), { ssr: false })`, que hace que Next jamás
  * evalúe este módulo en el servidor. Si algún día algo importa este archivo
  * de otra forma, el build de producción explota.
@@ -182,7 +182,7 @@ function LocationMap({
 }
 
 /** Input numérico con borrador en string (mismo criterio que `DraftNumberInput`
- * en `settings-form.tsx`): un input controlado directo por el número de
+ * en `fields.tsx`): un input controlado directo por el número de
  * react-hook-form le corta el "." o los ceros de más al dueño a mitad de
  * tipear. El borrador solo se resincroniza cuando el número cambió por una
  * fuente EXTERNA (arrastrar el pin, buscar, pegar) — nunca por su propia
@@ -276,7 +276,7 @@ type SearchState = 'idle' | 'searching' | 'no-results'
  * Solo `none` habilita que la búsqueda automática la pise sin preguntar. */
 type PointSource = 'none' | 'saved' | 'auto' | 'manual'
 
-export function LocationMapField({ storeId, control }: { storeId: number; control: Control<StoreSettingsInput> }) {
+export function LocationMapField({ storeId, control }: { storeId: number; control: Control<StoreProfileInput> }) {
   const latField = useController({ control, name: 'latitude' })
   const lngField = useController({ control, name: 'longitude' })
   const address = useWatch({ control, name: 'address' })

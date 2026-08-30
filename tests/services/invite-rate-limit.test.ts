@@ -54,7 +54,12 @@ vi.mock('@/models/rate-limit.model', () => ({ consumeRateLimit: consumeRateLimit
 vi.mock('@/models/store.model', () => ({
   requireStoreMembership: requireStoreMembershipMock,
   getStoreById: getStoreByIdMock,
-  updateStoreSettings: vi.fn(),
+  // `updateStoreSettings` se partió en dos (ver 00-architecture.md del
+  // pipeline de ajustes-por-secciones): ninguna acción de ESTE archivo llama
+  // a `updateStoreProfileAction`/`updateStoreOrderingAction`, así que estos
+  // dos mocks solo completan la forma del módulo — igual que `upsertBranding`.
+  updateStoreProfile: vi.fn(),
+  updateStoreOrdering: vi.fn(),
   upsertBranding: vi.fn(),
 }))
 
