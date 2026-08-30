@@ -1,7 +1,10 @@
 import { Suspense } from 'react'
+import { headers } from 'next/headers'
 import { estimateEta } from '@/models/order.model'
 import { getStorefront } from '@/controllers/storefront.controller'
-import { canTakeOrders } from '@/lib/store-availability'
+import { storefrontGate } from '@/lib/store-hours'
+import { storeBasePath } from '@/lib/urls'
+import { buildClosedSchedule } from '@/views/storefront/schedule-lib'
 import { StoreHero } from '@/views/storefront/store-hero'
 import { CatalogList } from '@/views/storefront/catalog-list'
 import { ReorderHandler } from '@/views/storefront/reorder-handler'
@@ -44,21 +47,39 @@ async function getHeroEtaMinutes(store: StoreWithBranding, categories: MenuCateg
 
 export default async function StorePage(props: PageProps<'/[store]'>) {
   const { store: slug } = await props.params
-  const { store, categories } = await getStorefront(slug)
-  // Se calcula UNA vez y se pasa a los dos que lo necesitan (el hero y el
+  const { store, categories, schedule } = await getStorefront(slug)
+  // `getStorefront` ya trae el calendario (una sola query, junto con el
+  // catálogo): pedirlo de nuevo acá era una lectura duplicada e innecesaria
+  // en el home de cada tienda, la página de más tráfico del producto.
+  // Se calcula UNA vez y se pasa a los que lo necesitan (el hero y el
   // `ClosedNotice` de más abajo): dos cálculos independientes del mismo
-  // booleano en la misma page son dos lugares donde podrían llegar a
-  // discrepar, aunque hoy no lo hagan.
-  const canOrder = canTakeOrders(store)
-  const etaMinutes = await getHeroEtaMinutes(store, categories, canOrder)
+  // gate en la misma page son dos lugares donde podrían llegar a discrepar,
+  // aunque hoy no lo hagan.
+  const gate = storefrontGate(store, schedule, new Date(), store.timezone)
+  // El hero muestra "Abierto ahora"/el ETA solo cuando la cocina ESTÁ
+  // trabajando ahora mismo — `closed_by_hours` sigue sin poder pedir "para
+  // ahora", aunque la carta y el carrito sigan andando (eso lo resuelve el
+  // checkout, no el hero).
+  const isOpenNow = gate.kind === 'open'
+  const etaMinutes = await getHeroEtaMinutes(store, categories, isOpenNow)
+
+  const host = (await headers()).get('host')
+  const basePath = storeBasePath(store.slug, host)
 
   return (
     <>
       <Suspense fallback={null}>
         <ReorderHandler categories={categories} />
       </Suspense>
-      <StoreHero store={store} etaMinutes={etaMinutes} acceptingOrders={canOrder} />
-      {!canOrder ? <ClosedNotice storeName={store.name} /> : null}
+      <StoreHero store={store} etaMinutes={etaMinutes} acceptingOrders={isOpenNow} />
+      {gate.kind === 'closed_by_hours' ? (
+        <ClosedNotice
+          storeName={store.name}
+          schedule={buildClosedSchedule(gate.opensAt, store.timezone, `${basePath}/checkout`)}
+        />
+      ) : gate.kind !== 'open' ? (
+        <ClosedNotice storeName={store.name} />
+      ) : null}
       {categories.length === 0 ? (
         <EmptyState
           title="Todavía sin carta"

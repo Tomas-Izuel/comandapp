@@ -409,6 +409,7 @@ export type Database = {
           eta_minutes: number | null
           external_ref: string | null
           external_synced_at: string | null
+          fire_at: string | null
           id: number
           idempotency_key: string
           needs_refund_at: string | null
@@ -425,6 +426,8 @@ export type Database = {
           ready_at: string | null
           refund_reason: string | null
           refunded_at: string | null
+          scheduled_for: string | null
+          scheduled_night: string | null
           short_code: string
           status: string
           store_id: number
@@ -456,6 +459,7 @@ export type Database = {
           eta_minutes?: number | null
           external_ref?: string | null
           external_synced_at?: string | null
+          fire_at?: string | null
           id?: never
           idempotency_key: string
           needs_refund_at?: string | null
@@ -472,6 +476,8 @@ export type Database = {
           ready_at?: string | null
           refund_reason?: string | null
           refunded_at?: string | null
+          scheduled_for?: string | null
+          scheduled_night?: string | null
           short_code: string
           status?: string
           store_id: number
@@ -503,6 +509,7 @@ export type Database = {
           eta_minutes?: number | null
           external_ref?: string | null
           external_synced_at?: string | null
+          fire_at?: string | null
           id?: never
           idempotency_key?: string
           needs_refund_at?: string | null
@@ -519,6 +526,8 @@ export type Database = {
           ready_at?: string | null
           refund_reason?: string | null
           refunded_at?: string | null
+          scheduled_for?: string | null
+          scheduled_night?: string | null
           short_code?: string
           status?: string
           store_id?: number
@@ -871,6 +880,79 @@ export type Database = {
           },
         ]
       }
+      store_hours: {
+        Row: {
+          created_at: string
+          day_of_week: number
+          duration_minutes: number
+          id: number
+          opens_at_minute: number
+          store_id: number
+        }
+        Insert: {
+          created_at?: string
+          day_of_week: number
+          duration_minutes: number
+          id?: never
+          opens_at_minute: number
+          store_id: number
+        }
+        Update: {
+          created_at?: string
+          day_of_week?: number
+          duration_minutes?: number
+          id?: never
+          opens_at_minute?: number
+          store_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_hours_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      store_hours_overrides: {
+        Row: {
+          created_at: string
+          duration_minutes: number | null
+          id: number
+          is_closed: boolean
+          on_date: string
+          opens_at_minute: number | null
+          store_id: number
+        }
+        Insert: {
+          created_at?: string
+          duration_minutes?: number | null
+          id?: never
+          is_closed?: boolean
+          on_date: string
+          opens_at_minute?: number | null
+          store_id: number
+        }
+        Update: {
+          created_at?: string
+          duration_minutes?: number | null
+          id?: never
+          is_closed?: boolean
+          on_date?: string
+          opens_at_minute?: number | null
+          store_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_hours_overrides_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       store_members: {
         Row: {
           created_at: string
@@ -1030,6 +1112,8 @@ export type Database = {
           pedidos_ya_url: string | null
           phone_e164: string | null
           rappi_url: string | null
+          scheduled_capacity_per_night: number | null
+          scheduled_delivery_enabled: boolean
           slug: string
           status: string
           timezone: string
@@ -1066,6 +1150,8 @@ export type Database = {
           pedidos_ya_url?: string | null
           phone_e164?: string | null
           rappi_url?: string | null
+          scheduled_capacity_per_night?: number | null
+          scheduled_delivery_enabled?: boolean
           slug: string
           status?: string
           timezone?: string
@@ -1102,6 +1188,8 @@ export type Database = {
           pedidos_ya_url?: string | null
           phone_e164?: string | null
           rappi_url?: string | null
+          scheduled_capacity_per_night?: number | null
+          scheduled_delivery_enabled?: boolean
           slug?: string
           status?: string
           timezone?: string
@@ -1117,6 +1205,10 @@ export type Database = {
     }
     Functions: {
       advance_auto_orders: { Args: never; Returns: Json }
+      cancel_scheduled_orders: {
+        Args: { p_night: string; p_pause?: boolean; p_store_id: number }
+        Returns: Json
+      }
       claim_event_deliveries: {
         Args: {
           p_limit?: number
@@ -1196,9 +1288,26 @@ export type Database = {
       }
       courier_queue: { Args: never; Returns: Json }
       create_order: { Args: { p_items: Json; p_order: Json }; Returns: number }
+      delete_store_hours_override: {
+        Args: { p_on_date: string; p_store_id: number }
+        Returns: undefined
+      }
       expire_pending_orders: { Args: { p_minutes?: number }; Returns: number }
       platform_metrics: { Args: never; Returns: Json }
       platform_stores: { Args: { p_store_id?: number }; Returns: Json }
+      set_store_hours: {
+        Args: { p_ranges: Json; p_store_id: number }
+        Returns: undefined
+      }
+      set_store_hours_override: {
+        Args: {
+          p_is_closed: boolean
+          p_on_date: string
+          p_ranges?: Json
+          p_store_id: number
+        }
+        Returns: undefined
+      }
       settle_event_delivery: {
         Args: {
           p_delivered: boolean

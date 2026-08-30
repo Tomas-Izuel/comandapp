@@ -247,6 +247,31 @@ export async function getProductForStore(storeId: number, productId: number): Pr
   return toProduct(data as unknown as ProductTree)
 }
 
+/**
+ * El `prep_minutes` más alto de TODA la carta del local (activos o no):
+ * insumo de la advertencia del editor de horarios ("tu producto más lento
+ * tarda X min"). Sin filtrar por disponibilidad a propósito — un producto
+ * agotado hoy puede volver mañana, y la advertencia describe la cocina, no el
+ * catálogo de este minuto.
+ *
+ * Sin `max()` vía PostgREST: alcanza con pedir 1 fila ordenada, y evita sumar
+ * una RPC nueva solo para un agregado que una `order + limit` ya resuelve.
+ */
+export async function getMaxPrepMinutes(storeId: number): Promise<number> {
+  await requireStoreMembership(storeId)
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('products')
+    .select('prep_minutes')
+    .eq('store_id', storeId)
+    .order('prep_minutes', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw new Error(`No se pudo leer el prep_minutes máximo del catálogo: ${error.message}`)
+  return data?.prep_minutes ?? 0
+}
+
 export function productImageUrl(imagePath: string | null): string | null {
   if (!imagePath) return null
   const { NEXT_PUBLIC_SUPABASE_URL } = serverEnv()

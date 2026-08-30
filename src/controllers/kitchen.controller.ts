@@ -124,6 +124,56 @@ export async function dispatchOnTheWayNotification(
 }
 
 /**
+ * El aviso de cancelación, para TODA cancelación — programada o no, del KDS,
+ * de la bandeja de Programados, de la pausa destructiva o del cierre de una
+ * fecha (Q7). La plantilla `order_cancelled` existía en `notifier.port.ts`
+ * desde el día uno y el adapter de WhatsApp ya tenía su texto armado; nadie la
+ * disparaba. Mismo patrón que `dispatchReadyNotification`: un solo lugar,
+ * porque el botón del panel (`updateOrderStatusAction`) y la cancelación
+ * masiva (T1, `pauseScheduledNightAction`/el cierre de fecha) tienen que
+ * mandar EXACTAMENTE el mismo mensaje.
+ *
+ * Solo WhatsApp — cero mail nuevo a propósito: `EmailTemplate` no gana un
+ * caso `order_cancelled` (ver el comentario de `email.port.ts`), porque un
+ * pedido cancelado no genera comprobante ni "listo para retirar".
+ */
+export async function dispatchCancelledNotification(
+  orderId: number,
+  /** Mismo motivo que en `dispatchReadyNotification`: solo lo pasa el camino del panel. */
+  expectedStoreId?: number,
+): Promise<NotificationResult | null> {
+  const found = await getOrderWithStoreById(orderId)
+
+  if (!found || (expectedStoreId !== undefined && found.order.storeId !== expectedStoreId)) {
+    log.error('kitchen.dispatchCancelledNotification', 'pedido no encontrado tras cancelarlo', undefined, {
+      orderId,
+      expectedStoreId,
+    })
+    return null
+  }
+
+  const { order, store } = found
+  const trackingUrl = storeUrl(store.slug, `/pedido/${order.publicToken}`)
+
+  return getNotifier().notify({
+    storeId: order.storeId,
+    orderId: order.id,
+    toPhoneE164: order.customerPhoneE164,
+    template: 'order_cancelled',
+    vars: {
+      customerName: order.customerName,
+      storeName: store.name,
+      shortCode: order.shortCode,
+      trackingUrl,
+      // Solo si HUBO plata cobrada de verdad: sin esto el mensaje habla de una
+      // devolución que no existe. Pago en el local, o un online que nunca
+      // llegó a `approved`, no dejan nada que devolver.
+      refund: order.paymentStatus === 'approved' ? { amountCents: order.totalCents, currency: order.currency } : undefined,
+    },
+  })
+}
+
+/**
  * El resultado del envío nunca puede cambiar el resultado de la operación: un
  * mail que falla no puede bloquear ni revertir el cambio de estado a "listo",
  * que ya se persistió. El sender ya devuelve 'skipped'/'failed' en vez de

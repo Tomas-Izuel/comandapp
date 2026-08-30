@@ -33,12 +33,15 @@ export function StoreHero({
   /** null = sin dato (tienda cerrada, sin productos, o el cálculo falló). Nunca se inventa un número. */
   etaMinutes: number | null
   /**
-   * Ya resuelto por la page con `canTakeOrders(store)` — no `store.acceptingOrders`
-   * crudo. Ese campo es solo "el dueño no cerró"; una tienda recién dada de
-   * alta (sin Mercado Pago y sin pago al retirar) lo tiene en `true` y sin
-   * embargo no puede tomar pedidos. Recibirlo ya resuelto (en vez de
-   * recalcularlo acá con el `store` entero) es lo que garantiza que el hero y
-   * el `ClosedNotice` de la page nunca puedan decir cosas distintas.
+   * Ya resuelto por la page con `storefrontGate(...).kind === 'open'` — no
+   * `store.acceptingOrders` crudo. "Abierto ahora" acá significa la cocina
+   * está tomando pedidos PARA AHORA MISMO: una tienda `closed_by_hours`
+   * (cerrada por horario, pero con programar habilitado) muestra "Cerrado
+   * por ahora" igual que cualquier otro cierre, aunque la carta y el
+   * carrito sigan andando — esa distinción vive en el checkout, no acá.
+   * Recibirlo ya resuelto (en vez de recalcularlo acá con el `store`
+   * entero) es lo que garantiza que el hero y el `ClosedNotice` de la page
+   * nunca puedan decir cosas distintas.
    */
   acceptingOrders: boolean
 }) {

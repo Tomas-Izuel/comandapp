@@ -32,8 +32,12 @@ const STATUS_TONE: Record<OrderStatus, 'neutral' | 'live' | 'warning' | 'danger'
  * un punto — más liviano — porque "aprobado" es el camino feliz y no necesita
  * gritar. Solo se pone en foco cuando hay algo que mirar: pendiente o, peor,
  * rechazado/reembolsado.
+ *
+ * Exportado: la bandeja de Programados (`scheduled-tray.tsx`) lo reusa tal
+ * cual — mismo lenguaje visual para el mismo dato, en vez de una segunda
+ * tabla de tonos que se puede desincronizar de esta.
  */
-const PAYMENT_TEXT_TONE: Record<PaymentStatus, string> = {
+export const PAYMENT_TEXT_TONE: Record<PaymentStatus, string> = {
   pending: 'text-warning-foreground',
   approved: 'text-muted-foreground',
   rejected: 'text-destructive font-medium',

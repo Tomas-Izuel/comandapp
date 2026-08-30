@@ -236,6 +236,17 @@ export const createOrderSchema = z
     deliveryAddressUnit: optionalText(60),
     deliveryAddressBetween: optionalText(160),
     deliveryAddressNotes: optionalText(300),
+
+    /**
+     * El INSTANTE que el cliente eligió de la lista de turnos, nunca una hora
+     * de pared. `z.iso.datetime()` sin `offset` acepta solo UTC con `Z`
+     * (verificado contra la doc de Zod v4) — es la misma restricción que ya
+     * vale para el resto del pedido: el browser manda un dato crudo y el
+     * servidor deriva todo lo demás (granularidad, lead, horizonte, horario,
+     * noche comercial, `fire_at`). Ausente = pedido para ahora, el
+     * comportamiento de siempre.
+     */
+    scheduledFor: z.iso.datetime().optional(),
   })
   // Mismo motivo: un cliente que mande `totalCents` tiene que fallar ruidoso,
   // no ser corregido en silencio.

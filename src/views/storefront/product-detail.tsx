@@ -25,7 +25,6 @@ import { useAddFeedback } from '@/views/storefront/use-add-feedback'
 import { storeHref, useStoreBasePath } from '@/views/storefront/store-base-path'
 import { useCart } from '@/lib/cart'
 import { formatCentsCompact } from '@/lib/money'
-import { canTakeOrders } from '@/lib/store-availability'
 import { cn } from '@/lib/utils'
 import type { MenuOptionGroup, MenuProduct, StoreWithBranding } from '@/models/types'
 
@@ -48,9 +47,18 @@ import type { MenuOptionGroup, MenuProduct, StoreWithBranding } from '@/models/t
 export function ProductDetailView({
   store,
   product,
+  blocked,
 }: {
   store: StoreWithBranding
   product: MenuProduct
+  /**
+   * Ya resuelto por la page con `storefrontGate()` — NO es "la tienda no
+   * puede pedir para ahora": una tienda `closed_by_hours` sigue dejando
+   * armar el carrito (la decisión ahora/programar es del checkout), así que
+   * `blocked` es `true` solo para los otros tres estados de la precedencia
+   * (`suspended`/`no_payment`/`paused`).
+   */
+  blocked: boolean
 }) {
   const { addLine } = useCart()
   const { flash, isAdded } = useAddFeedback()
@@ -60,9 +68,7 @@ export function ProductDetailView({
   const [selected, setSelected] = React.useState<Record<number, number[]>>({})
   const [notes, setNotes] = React.useState('')
 
-  // No solo "el dueño no cerró" (`acceptingOrders`): sin ningún medio de
-  // cobro conectado tampoco hay forma de confirmar el pedido después.
-  const storeCanTakeOrders = canTakeOrders(store)
+  const storeCanTakeOrders = !blocked
   const canOrder = storeCanTakeOrders && product.isAvailable
 
   function toggleOption(group: MenuOptionGroup, optionId: number) {

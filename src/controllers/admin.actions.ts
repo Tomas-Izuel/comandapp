@@ -28,9 +28,24 @@ import {
   sendPaymentChangeNotice,
   sendPaymentSupportRequest,
 } from '@/services/notifications/email/payment-change'
-import { storeSettingsInputSchema, type StoreSettingsInput } from '@/models/schemas/store.schema'
+import {
+  storeHoursOverrideDateSchema,
+  storeHoursOverrideInputSchema,
+  storeHoursWeeklyInputSchema,
+  storeSettingsInputSchema,
+  type StoreSettingsInput,
+} from '@/models/schemas/store.schema'
+import { getStoreHoursData, setStoreHours, setStoreHoursOverride } from '@/models/store-hours.model'
+import { currentCommercialNight } from '@/lib/store-hours'
+// T2 (senior-backend-engineer B) es dueño de order.model.ts y kitchen.controller.ts:
+// se importa, nunca se edita. El apagado destructivo de programados (Q4/Q9,
+// 00-architecture.md §7.8.1) vive acá porque orquesta store + horarios + la
+// cancelación transaccional + el aviso — ninguno de esos modelos por sí solo
+// tiene el contexto completo.
+import { cancelScheduledNight, getScheduledNightSummary } from '@/models/order.model'
+import { dispatchCancelledNotification } from '@/controllers/kitchen.controller'
 import type { Branding } from '@/models/schemas/branding.schema'
-import type { ActionResult, RateLimitBucket } from '@/models/types'
+import type { ActionResult, RateLimitBucket, StoreHoursRange, StoreHoursOverride } from '@/models/types'
 
 /**
  * Frase legible en español para el mensaje de un `RateLimitError` (S-06/T4).
@@ -614,4 +629,166 @@ export async function requestPaymentSupportAction(storeId: number, message: stri
     // El balde ya se consumió arriba, antes de mandar: no hace falta marcar
     // nada acá.
   }, 'admin.requestPaymentSupport')
+}
+
+// ---------------------------------------------------------------------------
+// Horarios de apertura y sus excepciones por fecha
+//
+// Guardar el patrón semanal o una excepción NUNCA cancela nada por sí solo
+// (00-architecture.md §7.8.2): cerrar una fecha con programados adentro pasa
+// por el MISMO diálogo destructivo que "pausar pedidos" — la UI hace el
+// preview + confirmación y recién después llama `pauseScheduledNightAction`
+// con esa fecha. Un solo camino de cancelación masiva, nunca dos.
+// ---------------------------------------------------------------------------
+
+export async function saveStoreHoursAction(storeId: number, ranges: StoreHoursRange[]): Promise<ActionResult> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id)
+    const parsed = storeHoursWeeklyInputSchema.parse(ranges)
+    await setStoreHours(id, parsed)
+  }, 'admin.saveStoreHours')
+}
+
+export async function saveStoreHoursOverrideAction(
+  storeId: number,
+  override: StoreHoursOverride | { date: string; remove: true },
+): Promise<ActionResult> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id)
+
+    if ('remove' in override) {
+      const date = storeHoursOverrideDateSchema.parse(override.date)
+      await setStoreHoursOverride(id, { date, remove: true })
+      return
+    }
+
+    const parsed = storeHoursOverrideInputSchema.parse(override)
+    await setStoreHoursOverride(id, parsed)
+  }, 'admin.saveStoreHoursOverride')
+}
+
+/**
+ * Convenience wrapper de `saveStoreHoursOverrideAction(storeId, { date,
+ * remove: true })`: un botón "quitar excepción" en el calendario no tiene por
+ * qué construir el objeto union a mano. No es un contrato de `01-tasks.md`
+ * (que plegó el borrado adentro de la acción de guardado con un flag), pero
+ * es la forma que la vista de T4 ya espera — agregar el wrapper acá cuesta
+ * una función y evita que dos slices en paralelo se bloqueen por un nombre.
+ */
+export async function deleteStoreHoursOverrideAction(storeId: number, date: string): Promise<ActionResult> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id)
+    const parsedDate = storeHoursOverrideDateSchema.parse(date)
+    await setStoreHoursOverride(id, { date: parsedDate, remove: true })
+  }, 'admin.deleteStoreHoursOverride')
+}
+
+// ---------------------------------------------------------------------------
+// "Pausar pedidos" = apagado destructivo (Q4/Q9) y cierre de fecha (Q14)
+//
+// Las dos comparten el mismo camino de cancelación masiva: SIN `night` es
+// "pausar pedidos" (la noche comercial en curso, la que calcula
+// `currentCommercialNight`); CON `night` es cerrar una fecha puntual desde el
+// calendario de excepciones. Solo el primer caso toca `accepting_orders` — la
+// fecha ya se cerró por el override, guardado aparte.
+// ---------------------------------------------------------------------------
+
+async function resolveTargetNight(storeId: number, night: string | undefined): Promise<string> {
+  if (night !== undefined) return night
+  const store = await getStoreById(storeId)
+  if (!store) throw new DomainError('No encontramos el local.', { status: 404 })
+  const schedule = await getStoreHoursData(storeId)
+  return currentCommercialNight(schedule, new Date(), store.timezone)
+}
+
+export async function previewScheduledNightAction(
+  storeId: number,
+  night?: string,
+): Promise<ActionResult<Awaited<ReturnType<typeof getScheduledNightSummary>>>> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id)
+    const targetNight = await resolveTargetNight(id, night)
+    return getScheduledNightSummary(id, targetNight)
+  }, 'admin.previewScheduledNight')
+}
+
+export async function pauseScheduledNightAction(
+  storeId: number,
+  night?: string,
+): Promise<ActionResult<Awaited<ReturnType<typeof cancelScheduledNight>>>> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id)
+
+    const isPause = night === undefined
+    const targetNight = await resolveTargetNight(id, night)
+
+    // `cancel_scheduled_orders` apaga `accepting_orders` DENTRO de la misma
+    // transacción que cancela cuando `opts.pause` es `true` — la atomicidad
+    // que evita la ventana "puerta cerrada con programados vivos, o al
+    // revés". Togglear `accepting_orders` acá aparte (como proponía el
+    // borrador del plan, dos pasos) REABRIRÍA esa ventana: ver el JSDoc de
+    // `cancelScheduledNight` en order.model.ts. Para el cierre de una fecha
+    // puntual (Q14) no hace falta: esa fecha ya se cerró con el override.
+    const result = await cancelScheduledNight(id, targetNight, { pause: isPause })
+
+    for (const orderId of result.cancelledIds) {
+      // Una falla al mandar el aviso no revierte la cancelación: el pedido ya
+      // está cancelado en la base, y no tiene sentido perder eso por un
+      // WhatsApp que no salió (mismo criterio que el resto de las
+      // notificaciones del repo).
+      await dispatchCancelledNotification(orderId, id)
+    }
+
+    return result
+  }, 'admin.pauseScheduledNight')
+}
+
+/**
+ * Cerrar una fecha CON programados adentro (Q14): guarda el override
+ * `isClosed: true` y recién DESPUÉS cancela los programados de esa noche +
+ * despacha el aviso — en ese orden, y ese orden es el arreglo de m4 de
+ * `03-review.md`.
+ *
+ * **No es atómico** (dos RPC distintas — `set_store_hours_override` y
+ * `cancel_scheduled_orders` — no comparten transacción), y arreglar eso de
+ * verdad exigiría una tercera RPC en Postgres que hiciera las dos cosas juntas
+ * — cambio de schema, así que se REPORTA en el dev log en vez de escribirse
+ * acá. Lo que SÍ se resuelve con las piezas existentes es el ORDEN: antes,
+ * `schedule-editor.tsx` cancelaba primero y guardaba el cierre después: si el
+ * guardado fallaba (red, timeout), quedaban pedidos YA cancelados con la
+ * fecha todavía "abierta" según el patrón semanal — el peor estado a medio
+ * camino, porque un cliente nuevo podía seguir programando ahí. Guardando el
+ * cierre PRIMERO, una falla en el paso de cancelar deja la fecha
+ * correctamente cerrada (nadie más programa ahí) con algunos programados
+ * viejos pendientes de cancelar — se reintenta sin pérdida, mismo patrón que
+ * "la puerta cerrada con programados vivos" ya documentado en
+ * `pauseScheduledNightAction`.
+ *
+ * A diferencia de esa función, acá NUNCA se pasa `pause: true`: cerrar una
+ * fecha puntual no toca `accepting_orders` — la tienda sigue aceptando
+ * pedidos para cualquier otro día.
+ */
+export async function closeStoreHoursDateAction(
+  storeId: number,
+  date: string,
+): Promise<ActionResult<Awaited<ReturnType<typeof cancelScheduledNight>>>> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id)
+
+    const parsedOverride = storeHoursOverrideInputSchema.parse({ date, isClosed: true, ranges: [] })
+    await setStoreHoursOverride(id, parsedOverride)
+
+    const result = await cancelScheduledNight(id, parsedOverride.date, { pause: false })
+    for (const orderId of result.cancelledIds) {
+      await dispatchCancelledNotification(orderId, id)
+    }
+
+    return result
+  }, 'admin.closeStoreHoursDate')
 }

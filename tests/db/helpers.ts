@@ -206,6 +206,29 @@ export function sqlConcurrently(scripts: string[]): Promise<string[]> {
   return Promise.all(scripts.map(runPsqlAsync))
 }
 
+/** Un resultado individual de {@link sqlConcurrentlySettled}: o el stdout, o el mensaje de error de Postgres. */
+export type SettledSql = { ok: true; value: string } | { ok: false; error: string }
+
+/**
+ * Igual que {@link sqlConcurrently} (misma concurrencia real, una conexión por
+ * script), pero para el caso en que se espera que ALGUNOS scripts fallen a
+ * propósito — la carrera del tope por noche de `create_order` es exactamente
+ * eso: con capacidad N-1 para N pedidos concurrentes, uno tiene que perder. Un
+ * `Promise.all` normal (como el de `sqlConcurrently`) rechaza entero apenas el
+ * PRIMERO falla, y ahí se pierde la cuenta de cuántos ganaron. `allSettled`
+ * conserva el resultado de cada conexión, gane o pierda.
+ */
+export function sqlConcurrentlySettled(scripts: string[]): Promise<SettledSql[]> {
+  return Promise.all(
+    scripts.map((script) =>
+      runPsqlAsync(script).then(
+        (value): SettledSql => ({ ok: true, value }),
+        (err: Error): SettledSql => ({ ok: false, error: err.message }),
+      ),
+    ),
+  )
+}
+
 /**
  * `auth.users` solo exige `id` (el resto son columnas de Supabase Auth con
  * default o nullable). Es la fila mínima que pide la FK de `store_members` /

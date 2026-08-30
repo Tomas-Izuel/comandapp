@@ -5,7 +5,11 @@ import { toActionResult } from '@/lib/action-result'
 import { requireStoreMembership } from '@/models/store.model'
 import { updateOrderStatus, markPaidInStore, getActiveOrders } from '@/models/order.model'
 import { assignCourier, listCouriersForAssignment } from '@/models/dispatch.model'
-import { dispatchReadyNotification, dispatchOnTheWayNotification } from '@/controllers/kitchen.controller'
+import {
+  dispatchReadyNotification,
+  dispatchOnTheWayNotification,
+  dispatchCancelledNotification,
+} from '@/controllers/kitchen.controller'
 import { type NotificationResult } from '@/services/notifications'
 import { orderStatusSchema, type OrderStatus } from '@/models/schemas/order.schema'
 import { assignCourierSchema } from '@/models/schemas/courier.schema'
@@ -70,6 +74,14 @@ export async function updateOrderStatusAction(p: {
 
       if (status === 'on_the_way') {
         const notification = await dispatchOnTheWayNotification(orderId, storeId)
+        return { notification }
+      }
+
+      // Q7: TODA cancelación avisa, no solo la del KDS botón-a-botón. La
+      // cancelación MASIVA (pausa destructiva, cierre de fecha) no pasa por
+      // acá — llama `dispatchCancelledNotification` directo, un id a la vez.
+      if (status === 'cancelled') {
+        const notification = await dispatchCancelledNotification(orderId, storeId)
         return { notification }
       }
 

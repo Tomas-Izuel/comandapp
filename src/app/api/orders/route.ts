@@ -137,7 +137,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const { store, priced, eta, delivery } = await priceCartForStore(parsedQuery.data.storeSlug, parsedItems.data)
+    const { store, priced, eta, delivery, fullNights } = await priceCartForStore(parsedQuery.data.storeSlug, parsedItems.data)
     return NextResponse.json({
       store: {
         slug: store.slug,
@@ -151,6 +151,9 @@ export async function GET(request: NextRequest) {
       priced,
       eta,
       delivery,
+      // Noches ya completas del tope de programados: el selector de turnos las
+      // oculta enteras. `[]` cuando la tienda no configuró tope.
+      fullNights,
     })
   } catch (err) {
     const { body, status } = toApiError(err, 'GET /api/orders')

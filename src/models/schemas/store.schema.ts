@@ -125,6 +125,16 @@ export const storeSettingsInputSchema = z.object({
   deliveryMinutes: z.coerce.number().int().min(0).max(240).default(30),
   deliveryBusyMinutes: z.coerce.number().int().min(0).max(240).default(50),
 
+  // Pedidos programados. Ver StoreScheduling en types.ts.
+  //
+  // `scheduledDeliveryEnabled` es política del dueño; que haya un repartidor
+  // ACTIVO es la realidad y se chequea aparte al crear el pedido, mismo par
+  // que `acceptingOrders`/`canCollectPayment`. `scheduledCapacityPerNight` en
+  // `null` es "sin tope" — no `0`, que cerraría la noche entera sin que el
+  // dueño lo haya pedido nunca.
+  scheduledDeliveryEnabled: z.boolean().default(false),
+  scheduledCapacityPerNight: z.coerce.number().int().positive().nullable().default(null),
+
   // `courierCollectsPayment` NO está acá, y la ausencia es a propósito: es
   // plata, no logística. "El repartidor cobra en la puerta" es la decisión de
   // sumar un canal de cobro por fuera de Mercado Pago (efectivo o su propio
@@ -146,3 +156,105 @@ export const storeSettingsInputSchema = z.object({
 })
 
 export type StoreSettingsInput = z.infer<typeof storeSettingsInputSchema>
+
+// ---------------------------------------------------------------------------
+// Horarios de apertura y sus excepciones por fecha.
+//
+// Validan lo MISMO que las RPC `set_store_hours` / `set_store_hours_override`
+// (migración `20260829140000_scheduled_orders_and_hours.sql`), duplicado a
+// propósito —igual que `RESERVED_SLUGS`—: la base es la autoridad final, el
+// schema hace que el mensaje se entienda antes de gastar un viaje a Postgres.
+// ---------------------------------------------------------------------------
+
+/** Igual que el CHECK de `store_hours`: 4 rangos por día como mucho, 28 en toda la semana. */
+const MAX_RANGES_PER_DAY = 4
+const MAX_RANGES_TOTAL = 28
+
+export const storeHoursRangeSchema = z.object({
+  dayOfWeek: z.coerce.number().int().min(0, '0 a 6').max(6, '0 a 6'),
+  opensAtMinute: z.coerce.number().int().min(0).max(1439),
+  durationMinutes: z.coerce.number().int().min(15, 'Mínimo 15 minutos').max(1440, 'Máximo 24 horas'),
+})
+
+/**
+ * ¿Se superponen dos rangos en la línea CIRCULAR de la semana? Mismo truco que
+ * la RPC: los desplazamientos ±10080 (una semana en minutos) hacen que
+ * "domingo 22:00–02:00" y "lunes 01:00" se vean como lo que son, el mismo
+ * tramo de tiempo, en vez de dos rangos que "casualmente" no se tocan en la
+ * recta numérica.
+ */
+function overlapsCircularWeek(a: { start: number; duration: number }, b: { start: number; duration: number }): boolean {
+  for (const offset of [0, 10080, -10080]) {
+    if (a.start < b.start + offset + b.duration && b.start + offset < a.start + a.duration) return true
+  }
+  return false
+}
+
+export const storeHoursWeeklyInputSchema = z
+  .array(storeHoursRangeSchema)
+  .max(MAX_RANGES_TOTAL, `Como máximo ${MAX_RANGES_TOTAL} rangos entre todos los días`)
+  .superRefine((ranges, ctx) => {
+    const perDay = new Map<number, number>()
+    for (const r of ranges) perDay.set(r.dayOfWeek, (perDay.get(r.dayOfWeek) ?? 0) + 1)
+    for (const count of perDay.values()) {
+      if (count > MAX_RANGES_PER_DAY) {
+        ctx.addIssue({ code: 'custom', message: `Como máximo ${MAX_RANGES_PER_DAY} rangos por día` })
+        return
+      }
+    }
+
+    const absolute = ranges.map((r) => ({ start: r.dayOfWeek * 1440 + r.opensAtMinute, duration: r.durationMinutes }))
+    for (let i = 0; i < absolute.length; i++) {
+      for (let j = i + 1; j < absolute.length; j++) {
+        if (overlapsCircularWeek(absolute[i], absolute[j])) {
+          ctx.addIssue({ code: 'custom', message: 'Hay rangos de horario que se superponen' })
+          return
+        }
+      }
+    }
+  })
+
+export type StoreHoursWeeklyInput = z.infer<typeof storeHoursWeeklyInputSchema>
+
+/** Solo la fecha: lo que necesita `delete_store_hours_override`. */
+export const storeHoursOverrideDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida (YYYY-MM-DD)')
+
+const storeHoursOverrideRangeSchema = storeHoursRangeSchema.omit({ dayOfWeek: true })
+
+export const storeHoursOverrideInputSchema = z
+  .object({
+    date: storeHoursOverrideDateSchema,
+    isClosed: z.boolean(),
+    ranges: z.array(storeHoursOverrideRangeSchema).max(MAX_RANGES_PER_DAY, `Como máximo ${MAX_RANGES_PER_DAY} rangos por fecha`),
+  })
+  .superRefine((value, ctx) => {
+    if (value.isClosed) {
+      // `ranges` no vacío con `isClosed: true` es justamente la forma que el
+      // CHECK de la tabla rechaza (`store_hours_overrides_shape_check`): una
+      // fecha cerrada no tiene rangos, no es "rangos que se ignoran".
+      if (value.ranges.length > 0) {
+        ctx.addIssue({ code: 'custom', message: 'Una fecha cerrada no lleva rangos propios', path: ['ranges'] })
+      }
+      return
+    }
+
+    if (value.ranges.length === 0) {
+      ctx.addIssue({ code: 'custom', message: 'Una fecha abierta necesita al menos un rango', path: ['ranges'] })
+      return
+    }
+
+    // Sin el módulo ±10080 de la semana: una excepción de fecha no se repite,
+    // así que el solapamiento se chequea en la recta numérica simple.
+    for (let i = 0; i < value.ranges.length; i++) {
+      for (let j = i + 1; j < value.ranges.length; j++) {
+        const a = value.ranges[i]
+        const b = value.ranges[j]
+        if (a.opensAtMinute < b.opensAtMinute + b.durationMinutes && b.opensAtMinute < a.opensAtMinute + a.durationMinutes) {
+          ctx.addIssue({ code: 'custom', message: 'Hay rangos que se superponen en esa fecha', path: ['ranges'] })
+          return
+        }
+      }
+    }
+  })
+
+export type StoreHoursOverrideInput = z.infer<typeof storeHoursOverrideInputSchema>

@@ -336,3 +336,50 @@ describe('updateOrderStatusSchema — S-18: coerción de IDs', () => {
     expect(updateOrderStatusSchema.safeParse({ orderId: 1, status: 'en-camino' }).success).toBe(false)
   })
 })
+
+/**
+ * `scheduledFor`: el INSTANTE que el cliente eligió de la lista de turnos,
+ * nunca una hora de pared. `z.iso.datetime()` sin `offset` acepta SOLO UTC con
+ * "Z" — si aceptara un offset (`+02:00`) o una hora "local" sin zona, el
+ * servidor no podría distinguir qué instante real quiso decir el cliente.
+ * `createOrder` (`order.model.ts`) es quien valida granularidad/lead/horizonte/
+ * horario; acá solo se prueba la FORMA que el schema deja pasar o rechaza.
+ */
+describe('createOrderSchema — scheduledFor: instante UTC, opcional, .strict() intacto', () => {
+  it('ausente es válido: "para ahora" sigue siendo el default', () => {
+    const result = createOrderSchema.safeParse(validOrderInput())
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.scheduledFor).toBeUndefined()
+  })
+
+  it('un instante UTC con "Z" es válido', () => {
+    const result = createOrderSchema.safeParse({ ...validOrderInput(), scheduledFor: '2026-01-08T13:00:00.000Z' })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.scheduledFor).toBe('2026-01-08T13:00:00.000Z')
+  })
+
+  it('un offset explícito (+02:00) se rechaza: solo UTC, nunca una hora de pared con zona', () => {
+    const result = createOrderSchema.safeParse({ ...validOrderInput(), scheduledFor: '2026-01-08T13:00:00+02:00' })
+    expect(result.success).toBe(false)
+  })
+
+  it('una hora "local" sin zona ni "Z" se rechaza: el servidor no puede adivinar el instante', () => {
+    const result = createOrderSchema.safeParse({ ...validOrderInput(), scheduledFor: '2026-01-08T13:00:00' })
+    expect(result.success).toBe(false)
+  })
+
+  it('una fecha sin hora no es un datetime válido', () => {
+    const result = createOrderSchema.safeParse({ ...validOrderInput(), scheduledFor: '2026-01-08' })
+    expect(result.success).toBe(false)
+  })
+
+  it('.strict() sigue vivo con scheduledFor presente: una clave desconocida ADEMÁS de un scheduledFor válido sigue dando 400', () => {
+    const result = createOrderSchema.safeParse({
+      ...validOrderInput(),
+      scheduledFor: '2026-01-08T13:00:00.000Z',
+      fireAt: '2026-01-08T12:00:00.000Z', // el cliente NUNCA manda esto: lo calcula el servidor
+    })
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result.error?.issues)).toMatch(/unrecognized_keys|fireAt/i)
+  })
+})

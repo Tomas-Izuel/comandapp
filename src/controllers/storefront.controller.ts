@@ -3,7 +3,8 @@ import 'server-only'
 import { notFound } from 'next/navigation'
 import { getStoreBySlug } from '@/models/store.model'
 import { getCategoryName, getMenu, getProductForStore } from '@/models/catalog.model'
-import type { MenuCategory, MenuProduct, StoreWithBranding } from '@/models/types'
+import { getStoreHoursData } from '@/models/store-hours.model'
+import type { MenuCategory, MenuProduct, StoreSchedule, StoreWithBranding } from '@/models/types'
 
 /**
  * Casos de uso de la vitrina pública: catálogo y ficha de producto. Sin
@@ -37,7 +38,14 @@ export async function getStoreForSlug(slug: string): Promise<StoreWithBranding> 
   return requireStore(slug)
 }
 
-export type StorefrontData = { store: StoreWithBranding; categories: MenuCategory[] }
+/**
+ * `schedule` va CRUDO (`StoreSchedule`), no el `StorefrontGate` ya resuelto: el
+ * gate depende de un `now` que solo tiene sentido fijar en el momento exacto
+ * en que la page lo necesita —`storefrontGate()` es pura e importable directo
+ * de `src/lib/store-hours.ts`—, y precomputarlo acá lo dejaría viejo apenas la
+ * respuesta viaja al cliente.
+ */
+export type StorefrontData = { store: StoreWithBranding; categories: MenuCategory[]; schedule: StoreSchedule }
 
 /**
  * Catálogo completo con precios, aunque la tienda no esté aceptando pedidos:
@@ -47,8 +55,8 @@ export type StorefrontData = { store: StoreWithBranding; categories: MenuCategor
  */
 export async function getStorefront(slug: string): Promise<StorefrontData> {
   const store = await requireStore(slug)
-  const categories = await getMenu(store.id)
-  return { store, categories }
+  const [categories, schedule] = await Promise.all([getMenu(store.id), getStoreHoursData(store.id)])
+  return { store, categories, schedule }
 }
 
 export type ProductDetailData = {

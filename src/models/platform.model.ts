@@ -55,6 +55,8 @@ type PlatformStoreRpcRow = {
   delivery_minutes: number
   delivery_busy_minutes: number
   courier_collects_payment: boolean
+  scheduled_delivery_enabled: boolean
+  scheduled_capacity_per_night: number | null
   created_at: string
   owner_email: string | null
   orders_last_30: number
@@ -100,6 +102,14 @@ function toPlatformStoreRow(row: PlatformStoreRpcRow): PlatformStoreRow {
       minutes: row.delivery_minutes,
       busyMinutes: row.delivery_busy_minutes,
       courierCollects: row.courier_collects_payment,
+    },
+    // La sexta redefinición de `platform_stores` agregó estas dos. La función
+    // enumera las columnas a mano: si no se agregan ahí Y acá, el backoffice
+    // muestra toda tienda como "sin delivery programado y sin tope" sin un solo
+    // error.
+    scheduling: {
+      deliveryEnabled: row.scheduled_delivery_enabled,
+      capacityPerNight: row.scheduled_capacity_per_night,
     },
     ownerEmail: row.owner_email,
     ordersLast30: row.orders_last_30,

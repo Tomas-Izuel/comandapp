@@ -1,5 +1,7 @@
+import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Button } from '@/components/ui/button'
 import { Panel } from '@/views/shared/surfaces'
 
 /**
@@ -36,16 +38,48 @@ export function EmptyState({
  * El local cerrado NO esconde la carta: quien elige a las 4 de la tarde dónde
  * va a cenar tiene que poder ver todo y volver. Este aviso solo explica por qué
  * no se puede pedir todavía.
+ *
+ * `schedule` es la única bifurcación de contenido, y se distingue por PROP,
+ * nunca por heurística sobre el texto: está presente solo cuando
+ * `storefrontGate() === 'closed_by_hours'` (cerrado por horario, la única
+ * rama con salida — programar). Los otros tres estados de la precedencia
+ * (`suspended`/`no_payment`/`paused`) nunca lo pasan y quedan pixel-idénticos
+ * al banner de una línea de siempre: son cierres que decidió el dueño o la
+ * plataforma, y ahí no hay "próxima apertura" que prometer.
  */
 export function ClosedNotice({
   storeName,
   reopensAt,
+  schedule,
   className,
 }: {
   storeName: string
   reopensAt?: string | null
+  /**
+   * Presente SOLO para `closed_by_hours`. `href` en `null` degrada sin CTA:
+   * es el caso "sin apertura calculable dentro del horizonte", donde no hay
+   * ningún turno que ofrecer todavía.
+   */
+  schedule?: { message: string; href: string | null }
   className?: string
 }) {
+  if (schedule) {
+    return (
+      <div role="status" className={cn('bg-muted border-border border-b px-4 py-3', className)}>
+        <div className="mx-auto flex w-full max-w-(--content-max) flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-muted-foreground text-sm">
+            <span className="text-foreground font-medium">{storeName}</span> {schedule.message}
+          </p>
+          {schedule.href ? (
+            <Button asChild size="sm" className="h-11 shrink-0 rounded-pill px-5">
+              <Link href={schedule.href}>Programar pedido</Link>
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
       role="status"

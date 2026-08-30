@@ -10,6 +10,7 @@ import { OrderSteps, PaymentNotice, STATUS_LABEL } from '@/views/shared/order-st
 import { Panel } from '@/views/shared/surfaces'
 import { Price } from '@/views/shared/money'
 import { formatTime, minutesUntil } from '@/lib/dates'
+import { formatScheduledLabel } from '@/views/storefront/schedule-lib'
 import { clearResolvedOrderCart } from '@/lib/cart'
 import { isTerminalStatus } from '@/models/schemas/order.schema'
 import { resumePaymentAction } from '@/controllers/checkout.actions'
@@ -67,9 +68,18 @@ function ResumePaymentButton({ token }: { token: string }) {
  * hace la cuenta de "cuánto falta desde ahora" y la refresca sola cada 30s
  * para que el número baje mientras el cliente tiene la pantalla abierta
  * esperando.
+ *
+ * Programados: la señal es la PRESENCIA de `order.scheduledFor`, no la
+ * ausencia de `etaMinutes` — ese campo viene `null` desde la creación para
+ * todo programado (no se midió ningún multiplicador de demanda con
+ * sentido), pero `etaAt` SÍ está seteado desde el arranque (`etaAt =
+ * scheduledFor`, congelado). Sin este branch el efecto de más arriba
+ * dispara igual y un pedido programado para el sábado mostraría "4320 min"
+ * en la tarjeta más grande de la pantalla.
  */
 function EtaHero({ order, timezone }: { order: OrderPublicView; timezone: string }) {
   const isDelivery = order.deliveryMethod === 'delivery'
+  const isScheduled = order.scheduledFor !== null
   // Arranca en el minuto congelado (mismo valor en server y en el primer
   // render del cliente, sin usar el reloj): recién en el efecto se calcula
   // "cuánto falta desde AHORA", que si se calculara en el render inicial
@@ -93,7 +103,13 @@ function EtaHero({ order, timezone }: { order: OrderPublicView; timezone: string
       <div className="flex flex-col gap-1">
         <p className="display text-2xl font-semibold">Pedido cancelado</p>
         {order.paymentStatus === 'approved' ? (
-          <p className="text-muted-foreground text-sm">Ya habías pagado — te reembolsamos automáticamente.</p>
+          // El reembolso de un pedido cancelado es MANUAL (el local lo
+          // gestiona desde Mercado Pago) — antes decía "automáticamente",
+          // que era falso incluso para un pedido inmediato y se vuelve más
+          // notorio con la cancelación de un programado (pausa destructiva o
+          // cierre de fecha). Mismo componente para toda cancelación, así
+          // que el copy correcto acá cubre los dos casos.
+          <p className="text-muted-foreground text-sm">Ya habías pagado — el local te contacta para el reembolso.</p>
         ) : null}
       </div>
     )
@@ -108,10 +124,33 @@ function EtaHero({ order, timezone }: { order: OrderPublicView; timezone: string
     )
   }
 
+  // El tramo largo: confirmado pero la cocina todavía no lo tocó (recién
+  // arranca cerca de `fireAt`, que acá no se expone — el cliente no necesita
+  // saber CUÁNDO entra a cocina, solo que su hora sigue en pie). Una vez que
+  // pasa a `preparing` esto converge solo con el resto del componente: el
+  // efecto de arriba ya recalcula `minutesUntil(etaAt)` con `etaAt =
+  // scheduledFor`, así que la cuenta regresiva de siempre vuelve a tener
+  // sentido sin un branch extra.
+  if (isScheduled && (order.status === 'pending' || order.status === 'confirmed')) {
+    return (
+      <div className="flex flex-col gap-1">
+        <p className="text-muted-foreground text-sm">Programado para</p>
+        <p className="display text-3xl leading-tight font-semibold">{formatScheduledLabel(order.scheduledFor!, timezone)}</p>
+        <p className="text-muted-foreground text-sm">
+          {order.status === 'pending'
+            ? 'Confirmá el pago para reservar tu horario.'
+            : 'Todavía no empezamos a prepararlo — arrancamos cerca de la hora que elegiste.'}
+        </p>
+      </div>
+    )
+  }
+
   if (!order.etaAt) {
     // Pago online todavía no confirmado: el ETA se recalcula recién al
     // aprobarse (ver CLAUDE.md, "Multiplicador de demanda"), así que hasta
-    // entonces no hay un número honesto que mostrar.
+    // entonces no hay un número honesto que mostrar. (Un programado sin
+    // pagar ya salió por el branch de arriba, así que esto es solo un
+    // pedido inmediato.)
     return (
       <div className="flex flex-col gap-1">
         <p className="display text-xl font-semibold">Esperando la confirmación del pago</p>

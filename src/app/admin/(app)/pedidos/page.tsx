@@ -1,9 +1,10 @@
 import { redirect } from 'next/navigation'
 import { resolveAdminSession } from '@/controllers/admin.controller'
-import { getOrderHistory } from '@/models/order.model'
+import { getOrderHistory, getScheduledOrders } from '@/models/order.model'
 import { DateFilter } from '@/views/admin/pedidos/date-filter'
 import { OrderHistoryList } from '@/views/admin/pedidos/history-list'
-import { PageFrame } from '@/views/admin/page-frame'
+import { ScheduledOrdersTray } from '@/views/admin/pedidos/scheduled-tray'
+import { PageFrame, PanelHeading } from '@/views/admin/page-frame'
 import { isCalendarDay, todayInZone, zonedDayRange } from '@/lib/dates'
 
 const HISTORY_DEFAULT_DAYS = 7
@@ -39,13 +40,32 @@ export default async function AdminOrderHistoryPage(props: PageProps<'/admin/ped
   const { fromIso } = zonedDayRange(from, timezone)
   const { toIso } = zonedDayRange(to, timezone)
 
-  const orders = await getOrderHistory(session.store.id, { from: fromIso, to: toIso, limit: 200 })
+  // Dos preguntas distintas, dos queries distintas: el historial acota por
+  // `created_at` (cuándo se hizo el pedido) y la bandeja de Programados por
+  // `scheduled_for` (cuándo se prometió) — mezclarlas en una sola lectura
+  // dejaría un programado a 3 días "escondido" fuera del rango de fechas del
+  // historial, o "perdido" en el día equivocado si se lo agrupara por creación.
+  const [orders, scheduledOrders] = await Promise.all([
+    getOrderHistory(session.store.id, { from: fromIso, to: toIso, limit: 200 }),
+    getScheduledOrders(session.store.id),
+  ])
 
   return (
     // `table`: es un historial denso de hasta 200 filas, no un formulario ni el
     // tablero de cocina — 90rem le da lugar a la tabla sin estirarla a 1920px.
     <PageFrame title="Pedidos" width="table" action={<DateFilter from={from} to={to} />}>
-      <OrderHistoryList orders={orders} timezone={timezone} />
+      <div className="flex flex-col gap-10">
+        <ScheduledOrdersTray
+          storeId={session.store.id}
+          orders={scheduledOrders}
+          timezone={timezone}
+          currency={session.store.currency}
+        />
+        <section className="flex flex-col gap-3">
+          <PanelHeading title="Historial" />
+          <OrderHistoryList orders={orders} timezone={timezone} />
+        </section>
+      </div>
     </PageFrame>
   )
 }

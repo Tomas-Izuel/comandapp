@@ -59,5 +59,9 @@ export function toStore(row: StoreRow): Store {
       busyMinutes: row.delivery_busy_minutes,
       courierCollects: row.courier_collects_payment,
     },
+    scheduling: {
+      deliveryEnabled: row.scheduled_delivery_enabled,
+      capacityPerNight: row.scheduled_capacity_per_night,
+    },
   }
 }
