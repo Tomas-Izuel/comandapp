@@ -99,6 +99,7 @@ export type Store = {
   longitude: number | null
   links: StoreLinks
   delivery: StoreDelivery
+  scheduling: StoreScheduling
 }
 
 /**
@@ -129,6 +130,116 @@ export type StoreDelivery = {
    */
   courierCollects: boolean
 }
+
+/**
+ * Lo que el dueño decidió sobre los pedidos programados.
+ *
+ * Va agrupado por el mismo motivo que `StoreDelivery`: se pasa entero a las
+ * funciones puras de `src/lib/store-hours.ts`, que son las únicas que saben
+ * armar una lista de slots.
+ */
+export type StoreScheduling = {
+  /**
+   * Si se puede programar un pedido CON envío. Es política del dueño; que haya
+   * un repartidor activo es la realidad y se chequea aparte — mismo par que
+   * `acceptingOrders` (decisión) y `onlinePaymentEnabled` (realidad).
+   */
+  deliveryEnabled: boolean
+  /**
+   * Tope de programados por noche. `null` = sin tope.
+   *
+   * Es un amortiguador de VOLUMEN, no de ráfaga: no impide que los programados
+   * de la noche caigan todos juntos a las 21:00, y no cuenta los pedidos
+   * inmediatos, que todavía no existen cuando el cliente elige el slot.
+   */
+  capacityPerNight: number | null
+}
+
+/**
+ * Un rango de apertura.
+ *
+ * `durationMinutes` en vez de una hora de cierre, porque el cruce de medianoche
+ * es la norma en una hamburguesería y `cierra < abre` deja los bordes ambiguos
+ * (¿`abre == cierra` es 0 h o 24 h?). El rango pertenece al día que ABRE: "vie
+ * 18:00–02:00" es un rango del viernes con `durationMinutes: 480`.
+ *
+ * `dayOfWeek` es 0 = domingo … 6 = sábado, la convención de `Date#getDay()`.
+ * La lib corre también en el browser y pelear contra la convención de JS es
+ * invitar al off-by-one. Que la UI arranque la semana en lunes es presentación.
+ */
+export type StoreHoursRange = {
+  dayOfWeek: number
+  opensAtMinute: number
+  durationMinutes: number
+}
+
+/**
+ * Una excepción por fecha: cierra un feriado que el patrón dice abierto, o abre
+ * un día que el patrón dice cerrado.
+ *
+ * `ranges` vacío con `isClosed: true` es "cerrado ese día"; con `isClosed:
+ * false` tiene al menos un rango y reemplaza al patrón para esa fecha.
+ */
+export type StoreHoursOverride = {
+  /** `YYYY-MM-DD` en la zona del local. Es la fecha del día que ABRE. */
+  date: string
+  isClosed: boolean
+  ranges: Omit<StoreHoursRange, 'dayOfWeek'>[]
+}
+
+/**
+ * El calendario completo de un local.
+ *
+ * **Sin rangos semanales = siempre abierta.** Es la compatibilidad hacia atrás:
+ * ninguna tienda existente tiene horarios cargados y ninguna puede amanecer
+ * cerrada por un deploy. El horario es opt-in, como el delivery.
+ */
+export type StoreSchedule = {
+  weekly: StoreHoursRange[]
+  overrides: StoreHoursOverride[]
+}
+
+/**
+ * El preview del diálogo destructivo (Q4/Q9 y Q14): cuántos programados de
+ * `night` todavía no dispararon, cuántos de esos están pagos, y cuánta plata
+ * hay que devolver a mano (Q8: sin auto-refund) si se confirma la
+ * cancelación. Es una FOTO — `getScheduledNightSummary` en `order.model.ts`
+ * usa el mismo predicado que `cancel_scheduled_orders`, pero entre que se
+ * pinta el diálogo y se confirma un pedido puede disparar y salir del conteo:
+ * "el diálogo puede decir 6 y cancelarse 5" es el comportamiento esperado.
+ *
+ * (Faltaba en el primer pase de contratos de T0 pese a estar nombrado en
+ * `01-tasks.md`; se agrega acá con la forma exacta que ese documento ya
+ * especificaba, sin inventar nada nuevo — T2 lo necesitaba para tipar
+ * `getScheduledNightSummary`.)
+ */
+export type ScheduledNightSummary = {
+  night: string
+  count: number
+  paidCount: number
+  paidTotalCents: number
+}
+
+/**
+ * Qué puede hacer el cliente en la vitrina ahora mismo.
+ *
+ * Es una unión discriminada y no un boolean porque son cinco situaciones con
+ * mensajes y capacidades distintas, y una sola tiene un modo degradado:
+ * `closed_by_hours` no deja pedir para ahora pero SÍ deja programar. Meter eso
+ * adentro de `canTakeOrders()` colapsaría las cinco en un `true/false`.
+ *
+ * La precedencia es el orden de esta unión: la primera que pega define la
+ * pantalla. `paused` gana sobre `closed_by_hours` a propósito — el dueño que
+ * aprieta el botón rojo espera que se apague todo, y un pedido que igual entra
+ * para el viernes es la sorpresa que hace que deje de confiar en el botón.
+ */
+export type StorefrontGate =
+  | { kind: 'suspended' }
+  | { kind: 'no_payment' }
+  | { kind: 'paused' }
+  /** Cerrada por horario. Es la ÚNICA que deja programar. */
+  | { kind: 'closed_by_hours'; opensAt: string | null }
+  | { kind: 'open' }
 
 export type StoreWithBranding = Store & { branding: Branding }
 
@@ -343,6 +454,37 @@ export type Order = {
   courierName: string | null
   assignedAt: string | null
   onTheWayAt: string | null
+
+  // --- Programado ------------------------------------------------------
+  /**
+   * Hora pactada de retiro, o de entrega en la puerta si es delivery.
+   * `null` = pedido para ahora, o sea el comportamiento de siempre.
+   *
+   * Inmutable en el trigger: la promesa no se renegocia. Si hay que cambiarla,
+   * se cancela el pedido y se hace otro — mover esto después del insert
+   * significa que el cliente pagó por una hora y retira en otra.
+   */
+  scheduledFor: string | null
+  /**
+   * Cuándo entra al KDS: `scheduledFor − (cocción + viaje + 5 de margen)`.
+   * `null` para un pedido inmediato.
+   *
+   * **Puede quedar en el PASADO y no es un bug.** El lead mínimo es de 60
+   * minutos planos, así que un carrito pesado con envío necesita más
+   * anticipación que eso y el pedido aparece en el tablero en el próximo poll.
+   * Es la recuperación correcta ("ya vas tarde, arrancá"). No lo arregles.
+   */
+  fireAt: string | null
+  /**
+   * La NOCHE COMERCIAL del pedido (`YYYY-MM-DD`), no el día calendario.
+   *
+   * Un pedido para el sábado a la 01:30 de un local que abre viernes 18:00–02:00
+   * pertenece a la noche del **viernes**. Lo deriva el servidor con
+   * `commercialNightOf()` y se persiste porque es la unidad de tres cosas: el
+   * tope por noche, el apagado destructivo y la bandeja de Programados. Con una
+   * ventana de timestamps, las tres tendrían que recalcular el mismo almanaque.
+   */
+  scheduledNight: string | null
 }
 
 /**
@@ -381,6 +523,7 @@ export type OrderPublicView = Pick<
   | 'deliveryMethod'
   | 'deliveryFeeCents'
   | 'deliveryAddress'
+  | 'scheduledFor'
 > & {
   storeName: string
   storeSlug: string

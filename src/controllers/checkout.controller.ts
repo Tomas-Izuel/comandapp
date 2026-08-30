@@ -4,12 +4,15 @@ import { cache } from 'react'
 import { after } from 'next/server'
 import { storeUrl } from '@/lib/urls'
 import { buildDeliveryQuote } from '@/lib/delivery'
+import { formatDateTime, zonedDay } from '@/lib/dates'
+import { SCHEDULE_HORIZON_DAYS } from '@/lib/store-hours'
 import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
 import { getCourierAvailability } from '@/models/courier.model'
 import { getStoreBySlug } from '@/models/store.model'
 import {
   attachPreference,
+  countScheduledByNight,
   createOrder,
   estimateEta,
   flagRefundNeeded,
@@ -47,7 +50,16 @@ const CHECKOUT_EXPIRES_MINUTES = 30
 
 const isProduction = process.env.NODE_ENV === 'production'
 
-export type PriceQuote = { store: Store; priced: PricedCart; eta: EtaEstimate; delivery: DeliveryQuote }
+/**
+ * `fullNights` viaja SOLO cuando la tienda tiene tope configurado
+ * (`scheduling.capacityPerNight`). Es una foto aproximada para que el
+ * selector de turnos del browser no ofrezca una noche que ya sabe que va a
+ * rebotar — el árbitro real es `create_order`, en la misma transacción que
+ * cuenta y reserva el lugar (00-architecture.md §7.3.1). Puede quedar vieja
+ * entre que se pintó y se confirmó: el rebote transaccional es el camino
+ * normal, no un caso raro.
+ */
+export type PriceQuote = { store: Store; priced: PricedCart; eta: EtaEstimate; delivery: DeliveryQuote; fullNights: string[] }
 
 // ---------------------------------------------------------------------------
 // Notificaciones — nunca cambian el resultado de la operación que las dispara.
@@ -62,7 +74,11 @@ export type PriceQuote = { store: Store; priced: PricedCart; eta: EtaEstimate; d
  * Todo pedido es retiro en el local: el comprobante lleva `storeAddress`
  * (dirección del LOCAL, no del cliente) para que sepa adónde ir a buscarlo.
  */
-function toReceiptEmailVars(order: Order, store: Pick<Store, 'name' | 'slug' | 'address'>, paymentPending: boolean): EmailVars {
+function toReceiptEmailVars(
+  order: Order,
+  store: Pick<Store, 'name' | 'slug' | 'address' | 'timezone'>,
+  paymentPending: boolean,
+): EmailVars {
   return {
     customerName: order.customerName,
     storeName: store.name,
@@ -74,6 +90,8 @@ function toReceiptEmailVars(order: Order, store: Pick<Store, 'name' | 'slug' | '
     // de pagar (00-architecture.md §2.2).
     trackingUrl: storeUrl(store.slug, `/pedido/${order.publicToken}`),
     etaMinutes: order.etaMinutes ?? undefined,
+    // Formateado en la zona del LOCAL: la promesa se hizo en esa hora de pared.
+    scheduledForLabel: order.scheduledFor ? formatDateTime(order.scheduledFor, store.timezone) : undefined,
     paymentMethod: order.paymentMethod,
     paymentPending,
     currency: order.currency,
@@ -88,7 +106,11 @@ function toReceiptEmailVars(order: Order, store: Pick<Store, 'name' | 'slug' | '
   }
 }
 
-async function sendReceiptEmail(order: Order, store: Pick<Store, 'name' | 'slug' | 'address'>, paymentPending: boolean): Promise<void> {
+async function sendReceiptEmail(
+  order: Order,
+  store: Pick<Store, 'name' | 'slug' | 'address' | 'timezone'>,
+  paymentPending: boolean,
+): Promise<void> {
   if (!order.customerEmail) return
   try {
     await getEmailSender().send({
@@ -108,7 +130,7 @@ async function sendReceiptEmail(order: Order, store: Pick<Store, 'name' | 'slug'
  * fuera de la página de seguimiento: la plantilla `order_confirmed` existía
  * en el port desde el día uno y nadie la disparaba (P-18).
  */
-async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'name' | 'slug'>): Promise<void> {
+async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'name' | 'slug' | 'timezone'>): Promise<void> {
   try {
     await getNotifier().notify({
       storeId: order.storeId,
@@ -121,6 +143,7 @@ async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'name' | '
         shortCode: order.shortCode,
         trackingUrl: storeUrl(store.slug, `/pedido/${order.publicToken}`),
         etaMinutes: order.etaMinutes ?? undefined,
+        scheduledForLabel: order.scheduledFor ? formatDateTime(order.scheduledFor, store.timezone) : undefined,
       },
     })
   } catch (err) {
@@ -156,8 +179,34 @@ export async function priceCartForStore(storeSlug: string, items: CartItem[]): P
   })
 
   const eta = await estimateEta(store, priced.basePrepMinutes, delivery.minutesToAdd)
+  const fullNights = await fullNightsFor(store)
 
-  return { store, priced, eta, delivery }
+  return { store, priced, eta, delivery, fullNights }
+}
+
+/**
+ * Noches del horizonte que ya llegaron al tope de la tienda, para que el
+ * selector de turnos las oculte enteras (Q3: la noche llena se cierra
+ * entera, no por franja). `[]` sin tope configurado — sin límite no hay
+ * noche que ocultar, y consultar igual sería un round trip que no sirve para
+ * nada.
+ *
+ * Las noches candidatas son los `SCHEDULE_HORIZON_DAYS + 1` días calendario
+ * del LOCAL desde hoy: toda `scheduled_night` posible cae en uno de esos días
+ * — es el mismo día que abre el rango, y el horizonte ya acota el `scheduledFor`
+ * a esa ventana (00-architecture.md §7.3.1).
+ */
+async function fullNightsFor(store: Store): Promise<string[]> {
+  const capacity = store.scheduling.capacityPerNight
+  if (capacity == null) return []
+
+  const nights: string[] = []
+  for (let i = 0; i <= SCHEDULE_HORIZON_DAYS; i++) {
+    nights.push(zonedDay(new Date(Date.now() + i * 24 * 60 * 60_000), store.timezone))
+  }
+
+  const counts = await countScheduledByNight(store.id, nights)
+  return nights.filter((night) => (counts[night] ?? 0) >= capacity)
 }
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,13 @@ export type EmailVars = {
   shortCode: string
   trackingUrl: string
   etaMinutes?: number | null
+  /**
+   * Presente solo en un pedido PROGRAMADO: la hora pactada, ya formateada en
+   * la zona del local ("30/08, 21:30"). Cuando está, la plantilla la muestra
+   * en vez de "Listo en ~X min" — la promesa ES el ETA, no hay minutos que
+   * contar.
+   */
+  scheduledForLabel?: string
   paymentMethod: 'online' | 'in_store'
   /** true = "pagás al retirar": el mail NO puede parecer un recibo de algo ya cobrado. */
   paymentPending: boolean

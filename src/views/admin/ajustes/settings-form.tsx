@@ -14,7 +14,12 @@ import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { updateStoreSettingsAction, requestCourierPaymentPolicyChangeAction } from '@/controllers/admin.actions'
+import {
+  updateStoreSettingsAction,
+  requestCourierPaymentPolicyChangeAction,
+  previewScheduledNightAction,
+  pauseScheduledNightAction,
+} from '@/controllers/admin.actions'
 import { storeSettingsInputSchema, type StoreSettingsInput } from '@/models/schemas/store.schema'
 import { scaleUpInt } from '@/lib/money'
 import { deliveryFeeFor, deliveryMinutesFor } from '@/lib/delivery'
@@ -22,6 +27,10 @@ import { Price } from '@/views/shared/money'
 import { MoneyInput } from '@/views/shared/money-input'
 import { PanelHeading } from '@/views/admin/page-frame'
 import { ConfirmWithCode, type ConfirmWithCodeHandle } from '@/views/admin/shared/confirm-with-code'
+import {
+  CancelScheduledOrdersDialog,
+  type AffectedOrders,
+} from '@/views/admin/shared/cancel-scheduled-orders-dialog'
 import type { Store, StoreDelivery } from '@/models/types'
 
 /**
@@ -69,6 +78,11 @@ function storeToInput(store: Store): StoreSettingsInput {
     deliveryMinOrderCents: store.delivery.minOrderCents,
     deliveryMinutes: store.delivery.minutes,
     deliveryBusyMinutes: store.delivery.busyMinutes,
+    // Nombres de columna, no de grupo: `scheduling.deliveryEnabled` no puede
+    // aplanarse a `deliveryEnabled` a secas — esa clave ya es del envío propio
+    // (§StoreDelivery) y colisionaría.
+    scheduledDeliveryEnabled: store.scheduling.deliveryEnabled,
+    scheduledCapacityPerNight: store.scheduling.capacityPerNight,
     // `courierCollectsPayment` NO va acá: salió de `storeSettingsInputSchema`
     // (ver el comentario ahí) y ahora es un control confirmado aparte,
     // `CourierCollectsPaymentField` más abajo en este archivo.
@@ -106,6 +120,8 @@ const FIELD_LABELS: Record<keyof StoreSettingsInput, string> = {
   deliveryMinOrderCents: 'Mínimo para envío',
   deliveryMinutes: 'Demora del envío',
   deliveryBusyMinutes: 'Demora sin repartidores libres',
+  scheduledDeliveryEnabled: 'Programar con envío',
+  scheduledCapacityPerNight: 'Tope de programados por noche',
   latitude: 'Ubicación en el mapa',
   longitude: 'Ubicación en el mapa',
   instagramHandle: 'Instagram',
@@ -336,6 +352,87 @@ function CourierCollectsPaymentField({
   )
 }
 
+/**
+ * "Tomando pedidos" dejó de ser un booleano gratis. Hasta hoy viajaba adentro
+ * del `useForm` general y se guardaba junto con el resto de Ajustes; ahora
+ * apagarlo puede cancelar pedidos programados que ya están pagados, así que
+ * la consecuencia se ve ANTES de aplicarse, no después en el historial.
+ *
+ * El campo sigue viviendo en el `useForm` (participa del submit general, por
+ * si el dueño lo prende de vuelta y guarda todo junto), pero el camino de
+ * APAGARLO nunca pasa por "Guardar ajustes": intercepta el cambio, pide el
+ * conteo real de programados de la noche en curso, y solo si el dueño
+ * confirma en el diálogo destructivo se ejecuta `pauseScheduledNightAction`
+ * (que apaga `accepting_orders` en el servidor y cancela lo que corresponda
+ * en una sola transacción — ver `01-tasks.md` §7.8.1). Prender de vuelta es
+ * inocuo: no dispara nada de esto.
+ */
+function AcceptingOrdersToggle({
+  storeId,
+  currency,
+  checked,
+  onChange,
+}: {
+  storeId: number
+  currency: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  const router = useRouter()
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [affected, setAffected] = useState<AffectedOrders | null>(null)
+
+  function handleToggle(next: boolean) {
+    if (next) {
+      // Prender de vuelta nunca es destructivo: sigue el camino normal del
+      // formulario, sin interrumpir.
+      onChange(true)
+      return
+    }
+    setDialogOpen(true)
+    setLoading(true)
+    setAffected(null)
+    void (async () => {
+      const result = await previewScheduledNightAction(storeId)
+      setLoading(false)
+      if (!result.ok) {
+        toast.error('No pudimos calcular el impacto', { description: result.error })
+        setDialogOpen(false)
+        return
+      }
+      setAffected(result.data)
+    })()
+  }
+
+  return (
+    <>
+      <ToggleField
+        checked={checked}
+        onChange={handleToggle}
+        label="Tomando pedidos"
+        hint="Es el freno de mano: se aplica encima del horario. Apagalo para cerrar ahora aunque el horario diga que estás abierto."
+      />
+      <CancelScheduledOrdersDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        loading={loading}
+        affected={affected}
+        currency={currency}
+        subject="de esta noche"
+        destructiveLabel="Pausar y cancelar"
+        safeLabel="Pausar pedidos"
+        onConfirm={() => pauseScheduledNightAction(storeId)}
+        onConfirmed={() => {
+          onChange(false)
+          toast.success('Pausaste el local')
+          router.refresh()
+        }}
+      />
+    </>
+  )
+}
+
 export function SettingsForm({ storeId, store, role }: { storeId: number; store: Store; role: 'owner' | 'staff' }) {
   const [pending, startTransition] = useTransition()
   const {
@@ -369,6 +466,7 @@ export function SettingsForm({ storeId, store, role }: { storeId: number; store:
   const deliveryMinOrderId = useId()
   const deliveryMinutesId = useId()
   const deliveryBusyMinutesId = useId()
+  const scheduledCapacityId = useId()
 
   const demandMultiplier = useWatch({ control, name: 'demandMultiplier' })
   const demandThresholdOrders = useWatch({ control, name: 'demandThresholdOrders' })
@@ -609,11 +707,11 @@ export function SettingsForm({ storeId, store, role }: { storeId: number; store:
           control={control}
           name="acceptingOrders"
           render={({ field }) => (
-            <ToggleField
+            <AcceptingOrdersToggle
+              storeId={storeId}
+              currency={store.currency}
               checked={field.value}
               onChange={field.onChange}
-              label="Tomando pedidos"
-              hint="Apagalo para pausar el local sin tocar el catálogo. La carta sigue visible."
             />
           )}
         />
@@ -876,6 +974,72 @@ export function SettingsForm({ storeId, store, role }: { storeId: number; store:
             </p>
           </div>
         ) : null}
+      </section>
+
+      <section className="flex flex-col gap-4">
+        {/*
+          El horario semanal y las excepciones por fecha viven en su propio
+          componente (`ScheduleEditor`, montado aparte en la page): son un
+          reemplazo transaccional vía RPC, no un campo más de este
+          `useForm`. Acá solo van las dos preferencias que SÍ son columnas de
+          `stores` con grant directo (Q2/Q3) y se guardan con el resto.
+        */}
+        <PanelHeading title="Pedidos programados" description="Configuración general. El horario y las excepciones por fecha se cargan más abajo, en su propia sección." />
+        <Controller
+          control={control}
+          name="scheduledDeliveryEnabled"
+          render={({ field }) => (
+            <ToggleField
+              checked={field.value}
+              onChange={field.onChange}
+              label="Permitir programar con envío"
+              hint="Además de retirar en el local, el cliente puede elegir una hora futura y que se lo lleven a domicilio. Necesita al menos un repartidor activo invitado."
+              disabled={!deliveryEnabled}
+            />
+          )}
+        />
+        {!deliveryEnabled ? (
+          <p className="text-muted-foreground text-xs">Activá &ldquo;Hacemos envíos a domicilio&rdquo; arriba para poder ofrecer esto.</p>
+        ) : null}
+
+        <Controller
+          control={control}
+          name="scheduledCapacityPerNight"
+          render={({ field }) => (
+            <div className="mt-2 flex flex-col gap-2">
+              <label htmlFor={`${scheduledCapacityId}-toggle`} className="flex min-h-11 items-center gap-2 text-sm">
+                <Checkbox
+                  id={`${scheduledCapacityId}-toggle`}
+                  checked={field.value !== null}
+                  onCheckedChange={(v) => field.onChange(v === true ? 10 : null)}
+                />
+                Poner un tope de pedidos programados por noche
+              </label>
+              {field.value !== null ? (
+                <div className="max-w-[10rem]">
+                  <DraftNumberInput
+                    id={scheduledCapacityId}
+                    value={field.value}
+                    onValueChange={(n) => field.onChange(Math.max(1, n))}
+                    min={1}
+                    step={1}
+                    invalid={!!errors.scheduledCapacityPerNight}
+                    className="h-10"
+                  />
+                </div>
+              ) : (
+                <p className="text-muted-foreground text-xs">
+                  Sin tope: se acepta cualquier cantidad de programados por noche. No limita los pedidos para ahora.
+                </p>
+              )}
+              {errors.scheduledCapacityPerNight ? (
+                <p role="alert" className="text-destructive text-xs">
+                  {errors.scheduledCapacityPerNight.message}
+                </p>
+              ) : null}
+            </div>
+          )}
+        />
       </section>
 
       <section className="flex flex-col gap-4">

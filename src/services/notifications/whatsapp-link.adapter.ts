@@ -23,10 +23,15 @@ import { logNotification } from './log'
  * `order_cancelled`: un pedido cancelado no es ocasión para un emoji festivo.
  */
 function buildMessage(template: NotificationTemplate, vars: NotificationVars): string {
-  const { customerName, storeName, shortCode, trackingUrl, etaMinutes, refund } = vars
+  const { customerName, storeName, shortCode, trackingUrl, etaMinutes, refund, scheduledForLabel } = vars
 
   switch (template) {
     case 'order_confirmed': {
+      // Un programado no tiene minutos que contar, tiene una hora que cumplir:
+      // el mensaje cambia de "va a estar listo en X" a "para el {hora pactada}".
+      if (scheduledForLabel) {
+        return `¡Hola ${customerName}! Confirmamos tu pedido ${shortCode} en ${storeName} para el ${scheduledForLabel} 🍔. Seguilo acá: ${trackingUrl}`
+      }
       const eta = etaMinutes ? ` Va a estar listo en unos ${etaMinutes} minutos.` : ''
       return `¡Hola ${customerName}! Confirmamos tu pedido ${shortCode} en ${storeName}, ya lo estamos preparando 🍔.${eta} Seguilo acá: ${trackingUrl}`
     }

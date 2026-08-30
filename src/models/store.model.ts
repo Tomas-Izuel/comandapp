@@ -207,6 +207,8 @@ export async function updateStoreSettings(storeId: number, input: StoreSettingsI
       delivery_min_order_cents: parsed.deliveryMinOrderCents,
       delivery_minutes: parsed.deliveryMinutes,
       delivery_busy_minutes: parsed.deliveryBusyMinutes,
+      scheduled_delivery_enabled: parsed.scheduledDeliveryEnabled,
+      scheduled_capacity_per_night: parsed.scheduledCapacityPerNight,
       // `courier_collects_payment` NO se escribe acá a propósito: ver el
       // comentario en `storeSettingsInputSchema` (store.schema.ts). Ese campo
       // solo lo toca `confirmPendingChangeAction` con `createAdminClient()`

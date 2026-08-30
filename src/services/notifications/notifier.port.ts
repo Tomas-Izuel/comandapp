@@ -24,6 +24,13 @@ export type NotificationVars = {
   trackingUrl: string
   etaMinutes?: number
   /**
+   * Solo la lee `order_confirmed`, y solo cuando el pedido es PROGRAMADO: la
+   * hora pactada, ya formateada en la zona del local. Reemplaza al "va a estar
+   * listo en unos X minutos" del mensaje de confirmación — un programado no
+   * tiene minutos que contar, tiene una hora que cumplir.
+   */
+  scheduledForLabel?: string
+  /**
    * Solo la lee `order_cancelled`. Si el pedido tenía un pago `approved`,
    * el monto (en centavos) y moneda que se le devuelven al cliente — así el
    * mensaje puede decir qué pasa con la plata en vez de dejarlo en el aire.

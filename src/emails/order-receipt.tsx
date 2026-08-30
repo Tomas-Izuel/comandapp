@@ -19,6 +19,7 @@ export default function OrderReceiptEmail(props: EmailVars) {
     shortCode,
     trackingUrl,
     etaMinutes,
+    scheduledForLabel,
     paymentPending,
     currency,
     items,
@@ -29,9 +30,15 @@ export default function OrderReceiptEmail(props: EmailVars) {
 
   const money = (cents: number) => formatCentsCompact(cents, currency)
 
+  // Un pedido PROGRAMADO no tiene minutos que contar: la hora pactada ES la
+  // promesa, así que reemplaza a "Listo en ~X min" en vez de convivir con ella.
   const pickupSpecs = [
     { label: 'Entrega', value: 'Retiro en el local' },
-    ...(etaMinutes ? [{ label: 'Listo en', value: `${etaMinutes} min` }] : []),
+    ...(scheduledForLabel
+      ? [{ label: 'Programado para', value: scheduledForLabel }]
+      : etaMinutes
+        ? [{ label: 'Listo en', value: `${etaMinutes} min` }]
+        : []),
   ]
 
   return (

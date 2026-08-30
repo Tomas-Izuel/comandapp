@@ -67,6 +67,8 @@ function storeRowFixture(overrides: Record<string, unknown> = {}) {
     delivery_minutes: 15,
     delivery_busy_minutes: 30,
     courier_collects_payment: false,
+    scheduled_delivery_enabled: false,
+    scheduled_capacity_per_night: null,
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -130,21 +132,53 @@ function orderRowFixture(overrides: Record<string, unknown> = {}) {
     assigned_at: null,
     on_the_way_at: null,
     order_items: [],
+    // Un pedido inmediato (la mayoría de los fixtures de este archivo) no
+    // programa nada: los tres campos nuevos de horarios quedan en null, igual
+    // que en la base para cualquier fila creada antes de este feature.
+    scheduled_for: null,
+    fire_at: null,
+    scheduled_night: null,
     ...overrides,
   }
 }
 
-const { rpcMock } = vi.hoisted(() => ({ rpcMock: vi.fn() }))
+/** Fila de `store_hours`: un rango semanal, tal como lo lee `getStoreScheduleForOrder`. */
+function weeklyRowFixture(overrides: Record<string, unknown> = {}) {
+  return { day_of_week: 0, opens_at_minute: 0, duration_minutes: 1440, ...overrides }
+}
+
+const { rpcMock, courierAvailabilityMock } = vi.hoisted(() => ({
+  rpcMock: vi.fn(),
+  courierAvailabilityMock: vi.fn(),
+}))
+
+// `createOrder` solo llama a `getCourierAvailability` cuando el pedido es de
+// delivery — se mockea acá, aparte del admin client, porque vive en su propio
+// módulo (`courier.model.ts`) y usa su propia RPC de Postgres.
+vi.mock('@/models/courier.model', () => ({
+  getCourierAvailability: courierAvailabilityMock,
+}))
 
 /**
  * Dispatcher por tabla, en el mismo estilo que
- * `platform-owner-invite.model.test.ts`. `orders` atiende DOS formas de
+ * `platform-owner-invite.model.test.ts`. `orders` atiende TRES formas de
  * `select` distintas (`estimateEta` cuenta filas con `head:true`; la lectura
- * final trae el pedido completo): se distinguen por el primer argumento de
- * `select`, no por orden de llamada — es lo único estable si el cuerpo de
- * `createOrder` se reordena.
+ * final trae el pedido completo; `findOrderIdByIdempotencyKey` busca por
+ * clave): se distinguen por el primer argumento de `select`, no por orden de
+ * llamada — es lo único estable si el cuerpo de `createOrder` se reordena.
+ *
+ * `store_hours`/`store_hours_overrides`: la guarda nueva de horarios
+ * (`getStoreScheduleForOrder`) los consulta SIEMPRE, incluso para un pedido
+ * inmediato — sin esto cualquier test de `createOrder` revienta con "tabla
+ * admin inesperada", que es justo la caída que este fix soluciona.
  */
-function buildAdminMock(opts: { storeRow: ReturnType<typeof storeRowFixture>; activeOrders?: number }) {
+function buildAdminMock(opts: {
+  storeRow: ReturnType<typeof storeRowFixture>
+  activeOrders?: number
+  weeklyRows?: Record<string, unknown>[]
+  overrideRows?: Record<string, unknown>[]
+  orderRow?: Record<string, unknown>
+}) {
   return {
     from: (table: string) => {
       if (table === 'stores') {
@@ -165,21 +199,31 @@ function buildAdminMock(opts: { storeRow: ReturnType<typeof storeRowFixture>; ac
           }),
         }
       }
+      if (table === 'store_hours') {
+        return { select: () => ({ eq: async () => ({ data: opts.weeklyRows ?? [], error: null }) }) }
+      }
+      if (table === 'store_hours_overrides') {
+        return { select: () => ({ eq: async () => ({ data: opts.overrideRows ?? [], error: null }) }) }
+      }
       if (table === 'orders') {
         return {
           select: (columns: string) => {
             if (columns === 'id') {
-              // estimateEta: cuenta pedidos "en la plancha".
+              // estimateEta: cuenta pedidos "en la plancha", con el filtro de
+              // `fire_at` encadenado DESPUÉS de `.in()` — el mismo `.or()` que
+              // usa el código real.
               return {
                 eq: () => ({
-                  in: async () => ({ count: opts.activeOrders ?? 0, error: null }),
+                  in: () => ({
+                    or: async () => ({ count: opts.activeOrders ?? 0, error: null }),
+                  }),
                 }),
               }
             }
             // Lectura final del pedido recién creado.
             return {
               eq: () => ({
-                single: async () => ({ data: orderRowFixture(), error: null }),
+                single: async () => ({ data: opts.orderRow ?? orderRowFixture(), error: null }),
               }),
             }
           },
@@ -227,6 +271,9 @@ function orderInput(overrides: Partial<CreateOrderInput> = {}): CreateOrderInput
 beforeEach(() => {
   rpcMock.mockReset()
   rpcMock.mockResolvedValue({ data: 555, error: null })
+  courierAvailabilityMock.mockReset()
+  courierAvailabilityMock.mockResolvedValue({ activeCouriers: 0, freeCouriers: 0 })
+  vi.useRealTimers()
 })
 
 describe('createOrder — precedencia de las guardas de medio de pago', () => {
@@ -293,5 +340,261 @@ describe('createOrder — camino feliz: las guardas nuevas no rompen un pedido o
     const [fnName, args] = rpcMock.mock.calls[0] as [string, { p_order: { payment_method: string } }]
     expect(fnName).toBe('create_order')
     expect(args.p_order.payment_method).toBe('online')
+  })
+
+  it('regresión: un pedido inmediato manda scheduled_for/scheduled_night/night_capacity en null a la RPC', async () => {
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ online_payment_enabled: true, scheduled_capacity_per_night: 5 }),
+    })
+
+    await createOrder(orderInput({ paymentMethod: 'online' }))
+
+    const [, args] = rpcMock.mock.calls[0] as [string, { p_order: Record<string, unknown> }]
+    expect(args.p_order.scheduled_for).toBeNull()
+    expect(args.p_order.scheduled_night).toBeNull()
+    expect(args.p_order.night_capacity).toBeNull()
+  })
+})
+
+/**
+ * La guarda nueva de horarios (§7.3 de `00-architecture.md`, punto 2): un
+ * pedido "para ahora" contra una tienda con horario cargado y cerrada en este
+ * instante ahora rechaza — ANTES esto ni se evaluaba, porque el horario no
+ * existía como concepto. `dayOfWeekOf` calcula el día de la semana en UTC a
+ * partir del día LOCAL, así que hay que fijar el reloj del proceso para poder
+ * predecir qué día de la semana ve `isOpenAt`.
+ *
+ * 2026-01-08T12:00:00.000Z es jueves (día 4) tanto en UTC como en
+ * America/Argentina/Cordoba (09:00 local, mismo día calendario: Cordoba no
+ * tiene horario de verano, así que el offset es -3 fijo).
+ */
+describe('createOrder — pedido "para ahora" con horario cargado', () => {
+  const NOW_ISO = '2026-01-08T12:00:00.000Z'
+  const THURSDAY = 4
+
+  it('la tienda tiene horario cargado y está CERRADA ahora → DomainError invitando a programar', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ online_payment_enabled: true }),
+      // Abre jueves 18:00–22:00 (1080 = 18*60, 240 = 4h). A las 09:00 local
+      // (la hora fijada) está cerrada: ni el rango de hoy la cubre, ni el de
+      // ayer (miércoles, sin filas) cruza la medianoche hasta acá.
+      weeklyRows: [weeklyRowFixture({ day_of_week: THURSDAY, opens_at_minute: 1080, duration_minutes: 240 })],
+    })
+
+    await expect(createOrder(orderInput({ paymentMethod: 'online' }))).rejects.toThrow(
+      'La cocina está cerrada. Podés programar un pedido para cuando abra.',
+    )
+    // Nunca llegó a construir el precio ni a llamar la RPC: la guarda corta antes.
+    expect(rpcMock).not.toHaveBeenCalled()
+  })
+
+  it('la tienda tiene horario cargado y está ABIERTA ahora → el pedido inmediato sigue funcionando igual que siempre', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ online_payment_enabled: true }),
+      // Abierta las 24 h del jueves: cubre las 09:00 locales fijadas arriba.
+      weeklyRows: [weeklyRowFixture({ day_of_week: THURSDAY, opens_at_minute: 0, duration_minutes: 1440 })],
+    })
+
+    const { order } = await createOrder(orderInput({ paymentMethod: 'online' }))
+    expect(order.id).toBe(555)
+    expect(rpcMock).toHaveBeenCalledOnce()
+  })
+
+  it('sin NINGUNA fila de horario (weekly vacío), la tienda se comporta como siempre abierta — compatibilidad hacia atrás', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }), weeklyRows: [] })
+
+    await expect(createOrder(orderInput({ paymentMethod: 'online' }))).resolves.toBeDefined()
+  })
+})
+
+/**
+ * `scheduledFor`: las cuatro validaciones de §7.3, en el orden en que
+ * `createOrder` las aplica. `weeklyRows: []` dejar la tienda "siempre
+ * abierta" en los casos que no prueban `isOpenAt`, para que cada test aísle
+ * UNA sola guarda.
+ */
+describe('createOrder — pedido programado: validaciones del servidor', () => {
+  const NOW_ISO = '2026-01-08T12:00:00.000Z' // :00 exacto, alineado a los 15 min — clave para separar granularidad de lead.
+
+  function isoPlusMinutes(minutes: number, extraMs = 0): string {
+    return new Date(new Date(NOW_ISO).getTime() + minutes * 60_000 + extraMs).toISOString()
+  }
+
+  it('granularidad: segundos distintos de cero rechaza aunque el minuto sea válido', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }), weeklyRows: [] })
+
+    await expect(
+      createOrder(orderInput({ paymentMethod: 'online', scheduledFor: isoPlusMinutes(90, 30_000) })),
+    ).rejects.toThrow('Elegí un horario de la lista de turnos disponibles')
+  })
+
+  it('granularidad: un minuto que no es múltiplo de 15 rechaza', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }), weeklyRows: [] })
+
+    await expect(
+      createOrder(orderInput({ paymentMethod: 'online', scheduledFor: isoPlusMinutes(61) })),
+    ).rejects.toThrow('Elegí un horario de la lista de turnos disponibles')
+  })
+
+  it('lead: JUSTO POR DEBAJO del piso (45 min — el slot de 15 en 15 más cercano por debajo de 60) rechaza', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }), weeklyRows: [] })
+
+    await expect(
+      createOrder(orderInput({ paymentMethod: 'online', scheduledFor: isoPlusMinutes(45) })),
+    ).rejects.toThrow('Programá tu pedido con al menos 60 minutos de anticipación')
+  })
+
+  it('lead: EXACTAMENTE 60 minutos (el piso, borde inclusive) pasa la guarda', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }), weeklyRows: [] })
+
+    await expect(
+      createOrder(orderInput({ paymentMethod: 'online', scheduledFor: isoPlusMinutes(60) })),
+    ).resolves.toBeDefined()
+  })
+
+  it('horizonte: EXACTAMENTE 3 días (el borde, inclusive) pasa la guarda', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }), weeklyRows: [] })
+
+    await expect(
+      createOrder(orderInput({ paymentMethod: 'online', scheduledFor: isoPlusMinutes(3 * 24 * 60) })),
+    ).resolves.toBeDefined()
+  })
+
+  it('horizonte: JUSTO POR ENCIMA de 3 días (un slot más, +15 min) rechaza', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }), weeklyRows: [] })
+
+    await expect(
+      createOrder(orderInput({ paymentMethod: 'online', scheduledFor: isoPlusMinutes(3 * 24 * 60 + 15) })),
+    ).rejects.toThrow('Solo podés programar pedidos hasta 3 días por adelantado')
+  })
+
+  it('el instante elegido cae FUERA de un rango abierto (misma lib que pintó el selector) → rechaza nombrando que hay que elegir otro turno', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO)) // jueves 09:00 local (Cordoba, -3)
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ online_payment_enabled: true }),
+      // Abre jueves 18:00–22:00: un turno a las 10:15 local (75 min después)
+      // cae fuera, aunque el lead y el horizonte sean válidos.
+      weeklyRows: [weeklyRowFixture({ day_of_week: 4, opens_at_minute: 1080, duration_minutes: 240 })],
+    })
+
+    await expect(
+      createOrder(orderInput({ paymentMethod: 'online', scheduledFor: isoPlusMinutes(75) })),
+    ).rejects.toThrow('Ese horario ya no está disponible. Elegí otro turno.')
+  })
+
+  it('el marcador scheduled_night_full de la RPC se traduce a un DomainError de interfaz, nunca crudo', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(NOW_ISO))
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ online_payment_enabled: true, scheduled_capacity_per_night: 1 }),
+      weeklyRows: [],
+    })
+    rpcMock.mockResolvedValueOnce({ data: null, error: { message: 'scheduled_night_full: la noche esta completa (1 de 1)' } })
+
+    const promise = createOrder(orderInput({ paymentMethod: 'online', scheduledFor: isoPlusMinutes(90) }))
+    await expect(promise).rejects.toBeInstanceOf(DomainError)
+    await expect(promise).rejects.toThrow('Esa noche ya está completa. Elegí otro día.')
+  })
+
+  describe('campos congelados de un pedido programado (nunca los de uno inmediato)', () => {
+    it('demand_multiplier null, eta_minutes null, eta_at = scheduledFor tal cual, scheduled_night derivado', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(NOW_ISO))
+      currentAdminMock = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }), weeklyRows: [] })
+      const scheduledFor = isoPlusMinutes(90)
+
+      await createOrder(orderInput({ paymentMethod: 'online', scheduledFor }))
+
+      const [, args] = rpcMock.mock.calls[0] as [string, { p_order: Record<string, unknown> }]
+      expect(args.p_order.demand_multiplier).toBeNull()
+      expect(args.p_order.eta_minutes).toBeNull()
+      expect(args.p_order.eta_at).toBe(scheduledFor)
+      expect(args.p_order.scheduled_for).toBe(scheduledFor)
+      // Siempre-abierta (weeklyRows: []) ⇒ commercialNightOf cae al día calendario local.
+      expect(args.p_order.scheduled_night).toBe('2026-01-08')
+    })
+  })
+
+  describe('delivery programado (Q2): política del dueño Y realidad del repartidor', () => {
+    function scheduledDeliveryInput(scheduledFor: string) {
+      return orderInput({
+        paymentMethod: 'online',
+        deliveryMethod: 'delivery',
+        deliveryAddressLine: 'Calle Falsa 123',
+        scheduledFor,
+      })
+    }
+
+    it('scheduledDeliveryEnabled en false → rechaza aunque el local SÍ haga delivery inmediato', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(NOW_ISO))
+      currentAdminMock = buildAdminMock({
+        storeRow: storeRowFixture({ online_payment_enabled: true, delivery_enabled: true, scheduled_delivery_enabled: false }),
+        weeklyRows: [],
+      })
+
+      await expect(createOrder(scheduledDeliveryInput(isoPlusMinutes(90)))).rejects.toThrow(
+        'Este local no permite programar pedidos con envío',
+      )
+      // Ni siquiera llegó a consultar si hay repartidores: la política corta antes que la realidad.
+      expect(courierAvailabilityMock).not.toHaveBeenCalled()
+    })
+
+    it('scheduledDeliveryEnabled en true pero CERO repartidores activos → rechaza', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(NOW_ISO))
+      currentAdminMock = buildAdminMock({
+        storeRow: storeRowFixture({ online_payment_enabled: true, delivery_enabled: true, scheduled_delivery_enabled: true }),
+        weeklyRows: [],
+      })
+      courierAvailabilityMock.mockResolvedValue({ activeCouriers: 0, freeCouriers: 0 })
+
+      await expect(createOrder(scheduledDeliveryInput(isoPlusMinutes(90)))).rejects.toThrow(
+        'No hay repartidores disponibles para programar un envío',
+      )
+    })
+
+    it('con política Y al menos 1 repartidor activo, el envío programado usa los minutos PLANOS de la tienda, nunca el cálculo por flota ocupada', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(NOW_ISO))
+      currentAdminMock = buildAdminMock({
+        storeRow: storeRowFixture({
+          online_payment_enabled: true,
+          delivery_enabled: true,
+          scheduled_delivery_enabled: true,
+          delivery_minutes: 15,
+          delivery_busy_minutes: 45,
+        }),
+        weeklyRows: [],
+      })
+      // Toda la flota ocupada (freeCouriers: 0): si el código usara
+      // `deliveryMinutesFor` con la ocupación de AHORA, esto daría 45
+      // (busyMinutes). El plano ignora ese dato a propósito.
+      courierAvailabilityMock.mockResolvedValue({ activeCouriers: 1, freeCouriers: 0 })
+
+      await createOrder(scheduledDeliveryInput(isoPlusMinutes(90)))
+
+      const [, args] = rpcMock.mock.calls[0] as [string, { p_order: Record<string, unknown> }]
+      expect(args.p_order.delivery_minutes).toBe(15)
+    })
   })
 })

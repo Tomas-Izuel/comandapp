@@ -39,6 +39,14 @@ type PreviewOk = {
    * de mínimo: solo elige qué mostrar según el método elegido.
    */
   delivery: DeliveryQuote
+  /**
+   * Noches comerciales del horizonte que ya llegaron al tope de programados
+   * de la tienda (`stores.scheduled_capacity_per_night`). Ausente o vacío =
+   * sin tope configurado, o ninguna noche llena todavía. Es una FOTO: puede
+   * quedar vieja entre que se pintó y se confirmó — el árbitro real es la
+   * transacción de `create_order`, no esta lista.
+   */
+  fullNights?: string[]
 }
 
 async function fetchPreview(storeSlug: string, items: unknown[], signal: AbortSignal): Promise<PreviewOk> {

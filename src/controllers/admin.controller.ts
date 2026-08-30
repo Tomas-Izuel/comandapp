@@ -6,8 +6,10 @@ import { getCurrentUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { decryptSecret, lastFour } from '@/lib/crypto/secrets'
 import { requireStoreMembership, listStoresForCurrentUser } from '@/models/store.model'
+import { getMaxPrepMinutes } from '@/models/catalog.model'
+import { getStoreHoursData } from '@/models/store-hours.model'
 import { findCourierMembership } from '@/models/courier.model'
-import type { Store } from '@/models/types'
+import type { Store, StoreSchedule } from '@/models/types'
 
 /**
  * Sesión del panel de un local: quién es, qué tienda opera y con qué rol.
@@ -127,3 +129,28 @@ export const confirmationCodeSchema = z
  * reconozca su casilla.
  */
 export type PendingChangeStarted = { requestId: number; sentTo: string }
+
+// ---------------------------------------------------------------------------
+// Horarios de apertura — editor de Ajustes
+//
+// `getStoreHoursData` en sí es de lectura pública (RLS pública, igual que la
+// vitrina), pero esto sí exige membresía: es el camino del PANEL, y sumarle el
+// prep_minutes más lento del catálogo (dato interno del local) no tiene
+// sentido ofrecerlo a un storeId ajeno solo porque las tablas subyacentes son
+// legibles.
+// ---------------------------------------------------------------------------
+
+export type StoreScheduleAdmin = {
+  schedule: StoreSchedule
+  /** El `prep_minutes` más alto real de la carta: insumo de la advertencia
+   *  "se aceptan pedidos hasta las X, tu producto más lento sale Y" que arma
+   *  `lastOrderWarning()` (`src/lib/store-hours.ts`) — la compone la vista con
+   *  el `timezone` de la sesión, no este controller. */
+  maxPrepMinutes: number
+}
+
+export async function getStoreScheduleForAdmin(storeId: number): Promise<StoreScheduleAdmin> {
+  await requireStoreMembership(storeId)
+  const [schedule, maxPrepMinutes] = await Promise.all([getStoreHoursData(storeId), getMaxPrepMinutes(storeId)])
+  return { schedule, maxPrepMinutes }
+}

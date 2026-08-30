@@ -19,9 +19,14 @@ import { getSavedCustomer, saveCustomer, clearSavedCustomer } from '@/lib/custom
 import { useCheckoutQuote } from '@/views/storefront/use-priced-cart'
 import { storeHref, useStoreBasePath } from '@/views/storefront/store-base-path'
 import { formatCentsCompact } from '@/lib/money'
+import { formatTime } from '@/lib/dates'
 import { usePreviewMode } from '@/lib/preview-mode'
 import { cn } from '@/lib/utils'
+import { SCHEDULE_LEAD_MINUTES } from '@/lib/store-hours'
+import { buildScheduleGroups, formatOpensAtShort } from '@/views/storefront/schedule-lib'
+import { SchedulePicker } from '@/views/storefront/schedule-picker'
 import type { PaymentMethod, DeliveryMethod } from '@/models/schemas/order.schema'
+import type { StoreSchedule } from '@/models/types'
 
 /**
  * El paso donde se decide de verdad. Operate: cada bloque es su propia
@@ -34,6 +39,15 @@ import type { PaymentMethod, DeliveryMethod } from '@/models/schemas/order.schem
  * mínimo y la disponibilidad del envío YA calculados contra la config de la
  * tienda. El browser no suma nada — ni plata ni minutos — solo elige cuál de
  * los dos totales/ETA mostrar según el método que el cliente marcó.
+ *
+ * Pedidos programados (Q3/Q5/Q10/Q11/Q2): los turnos se calculan ACÁ, en el
+ * cliente, con `scheduleSlots()` sobre los horarios que la page ya trajo —
+ * sin round-trip nuevo. Lo único que SÍ necesita al servidor es qué noches
+ * ya llegaron al tope (`fullNights` de la cotización), porque la ocupación
+ * no es un dato que el browser pueda derivar solo. El lead mínimo es un piso
+ * PLANO de 60 minutos (`SCHEDULE_LEAD_MINUTES`) — no depende de la cocción
+ * ni del envío: es una decisión de producto explícita (Q11, ver
+ * `00-architecture.md` §2.2), no una fórmula que falte terminar acá.
  */
 export function CheckoutForm({
   storeSlug,
@@ -41,12 +55,29 @@ export function CheckoutForm({
   storeAddress,
   inStorePaymentEnabled,
   onlinePaymentEnabled,
+  timezone,
+  schedule,
+  scheduledDeliveryEnabled,
+  forced,
+  opensAt,
 }: {
   storeSlug: string
   currency: string
   storeAddress: string | null
   inStorePaymentEnabled: boolean
   onlinePaymentEnabled: boolean
+  timezone: string
+  /** Horarios + excepciones del local — con qué `scheduleSlots()` arma la grilla. */
+  schedule: StoreSchedule
+  scheduledDeliveryEnabled: boolean
+  /**
+   * `storefrontGate() === 'closed_by_hours'`: "para ahora" deja de existir,
+   * programar es la única rama. Lo resolvió la page — acá no se recalcula
+   * el gate, sería un segundo cálculo del mismo booleano en dos lugares.
+   */
+  forced: boolean
+  /** Próxima apertura, solo con sentido cuando `forced`. */
+  opensAt: string | null
 }) {
   const router = useRouter()
   const { lines, hydrated, ensureIdempotencyKey } = useCart()
@@ -90,6 +121,16 @@ export function CheckoutForm({
     customerEmail: emailRef,
     deliveryAddressLine: deliveryLineRef,
   }
+  // El error de `scheduledFor` no tiene un `<input>` propio al que llevarle
+  // el foco (es un radiogroup de horarios) — el encabezado de la sección es
+  // el destino, con `tabIndex={-1}` para poder enfocarlo desde JS.
+  const scheduleHeadingRef = React.useRef<HTMLHeadingElement>(null)
+
+  // "Para ahora" / "Programar". Con la tienda cerrada por horario (`forced`)
+  // no hay nada que elegir: programar es la única rama desde el arranque.
+  const [scheduleMode, setScheduleMode] = React.useState<'now' | 'schedule'>(forced ? 'schedule' : 'now')
+  const [scheduledIso, setScheduledIso] = React.useState<string | null>(null)
+  const [activeNight, setActiveNight] = React.useState<string | null>(null)
 
   // Memoria de contacto: si el cliente ya pidió una vez, no le volvemos a
   // pedir sus datos. Se lee después del primer render (recién ahí existe
@@ -155,6 +196,72 @@ export function CheckoutForm({
   const inStorePaymentHint =
     effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen.' : 'Reservás el pedido ahora y pagás en el local.'
 
+  // El "ahora" del selector de horario. Arranca UNA vez —todo lo que sigue
+  // ya pasó el corte de `!hydrated` de más abajo (o sea que ya es 100%
+  // cliente), así que el valor inicial no arriesga un mismatch de
+  // hidratación— pero DESPUÉS se refresca solo: el lead mínimo es un piso
+  // PLANO de 60 minutos, así que una sesión de checkout larga (la app en
+  // segundo plano mientras el cliente consulta con quien va a comer, algo
+  // habitual en mobile) corre el turno más próximo hacia adelante. Sin este
+  // refresco, la grilla seguía ofreciendo un horario que ya no cumplía el
+  // lead real y el cliente se comía un `DomainError` recién al confirmar.
+  // Mismo intervalo que ya usa el poll de `/pedido/[token]` en estado
+  // estable (`order-tracking.tsx`), no uno nuevo inventado acá.
+  const [now, setNow] = React.useState(() => new Date())
+  React.useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 30_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  const schedulingActive = forced || scheduleMode === 'schedule'
+  // `delivery.available` ya excluye "sin repartidores activos" y "por debajo
+  // del mínimo de envío" (`buildDeliveryQuote`, `src/lib/delivery.ts`) — no
+  // hace falta un dato nuevo en la cotización para la guarda de Q2 ("delivery
+  // programado exige ≥1 repartidor activo al ofrecer los slots").
+  const deliverySchedulable = scheduledDeliveryEnabled && !!delivery?.available
+  const schedulingBlockedByDelivery = schedulingActive && effectiveDeliveryMethod === 'delivery' && !deliverySchedulable
+
+  // Sin la cotización lista no hay `fullNights` todavía: se espera antes de
+  // pintar la grilla, en vez de mostrar turnos que capaz están completos
+  // para deshabilitarlos un instante después con un salto de layout.
+  const scheduleGroups = React.useMemo(() => {
+    if (quote.status !== 'ready') return null
+    return buildScheduleGroups({
+      schedule,
+      from: now,
+      timeZone: timezone,
+      leadMinutes: SCHEDULE_LEAD_MINUTES,
+      fullNights: quote.data.fullNights ?? [],
+    })
+  }, [quote, schedule, timezone, now])
+
+  // Con la tienda cerrada por horario, el primer turno posible se precarga
+  // solo (menos toques para "quiero pedir para cuando abran"), siempre
+  // corregible desde la grilla.
+  React.useEffect(() => {
+    if (!forced || scheduledIso || !scheduleGroups) return
+    const firstAvailable = scheduleGroups.find((g) => g.slots.length > 0)
+    if (!firstAvailable) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- default único al llegar la cotización, no un sync loop
+    setScheduledIso(firstAvailable.slots[0].toISOString())
+    setActiveNight(firstAvailable.night)
+  }, [forced, scheduleGroups, scheduledIso])
+
+  // Si el turno elegido queda AFUERA de la grilla recién recalculada —el
+  // lead se corrió porque pasó el tiempo (el refresco de `now` de arriba), o
+  // la noche se llenó en el medio (`fullNights` cambió)— se descarta acá en
+  // vez de dejar que el cliente lo confirme y se coma el `DomainError` del
+  // servidor. En modo forzado (`forced`) el efecto de arriba vuelve a elegir
+  // el primer turno disponible solo, apenas `scheduledIso` queda en `null`.
+  React.useEffect(() => {
+    if (!scheduledIso || !scheduleGroups) return
+    const stillOffered = scheduleGroups.some((g) => g.slots.some((slot) => slot.toISOString() === scheduledIso))
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacciona a que el TIEMPO pasó (fuera de React), no a un cambio que ya vino de un evento
+    if (!stillOffered) setScheduledIso(null)
+  }, [scheduleGroups, scheduledIso])
+
+  const opensAtLabel = opensAt ? formatOpensAtShort(opensAt, timezone) : null
+
   if (!hydrated) return null
 
   if (lines.length === 0) {
@@ -218,6 +325,10 @@ export function CheckoutForm({
           deliveryAddressUnit: effectiveDeliveryMethod === 'delivery' ? deliveryAddressUnit.trim() || undefined : undefined,
           deliveryAddressBetween: effectiveDeliveryMethod === 'delivery' ? deliveryAddressBetween.trim() || undefined : undefined,
           deliveryAddressNotes: effectiveDeliveryMethod === 'delivery' ? deliveryAddressNotes.trim() || undefined : undefined,
+          // El browser manda el INSTANTE que eligió de la lista de slots,
+          // nunca una hora de pared: el servidor deriva `fireAt`/`scheduledNight`
+          // y vuelve a validar horario, lead y tope contra la base.
+          scheduledFor: schedulingActive && scheduledIso ? scheduledIso : undefined,
         }),
       })
       const body = await res.json()
@@ -226,7 +337,13 @@ export function CheckoutForm({
         setFormError(body.error ?? 'No se pudo crear el pedido')
         if (typeof body.field === 'string') {
           setFieldErrors({ [body.field]: body.error })
-          fieldRefs[body.field]?.current?.focus()
+          // `scheduledFor` no tiene un `<input>` propio (es un radiogroup de
+          // horarios): el foco va al encabezado de la sección, no a un campo.
+          if (body.field === 'scheduledFor') {
+            scheduleHeadingRef.current?.focus()
+          } else {
+            fieldRefs[body.field]?.current?.focus()
+          }
         }
         setSubmitting(false)
         return
@@ -501,6 +618,71 @@ export function CheckoutForm({
         )}
       </Panel>
 
+      {/* Va DESPUÉS de "Cómo lo recibís" a propósito: el envío programado
+          depende de con qué método se entrega, así que mostrar esto antes
+          invitaría a elegir un turno que el método de entrega, recién
+          elegido después, invalida. */}
+      <Panel className="flex flex-col gap-3 p-4 sm:p-5">
+        <h2
+          ref={scheduleHeadingRef}
+          tabIndex={-1}
+          className="focus-visible:ring-ring/50 rounded-sm text-sm font-semibold outline-none focus-visible:ring-3"
+        >
+          Cuándo lo querés
+        </h2>
+
+        {forced ? (
+          <p className="text-muted-foreground text-sm">
+            El local está cerrado ahora{opensAtLabel ? ` — abre ${opensAtLabel}` : ''}. Elegí un horario para tu pedido.
+          </p>
+        ) : (
+          <RadioGroup
+            value={scheduleMode}
+            onValueChange={(value) => setScheduleMode(value as 'now' | 'schedule')}
+            className="grid grid-cols-2 gap-2"
+          >
+            <Label className="border-border has-[[data-state=checked]]:border-primary flex h-11 items-center justify-center gap-2 rounded-(--radius-md) border font-normal transition-colors duration-(--dur-fast)">
+              <RadioGroupItem value="now" />
+              Para ahora
+            </Label>
+            <Label className="border-border has-[[data-state=checked]]:border-primary flex h-11 items-center justify-center gap-2 rounded-(--radius-md) border font-normal transition-colors duration-(--dur-fast)">
+              <RadioGroupItem value="schedule" />
+              Programar
+            </Label>
+          </RadioGroup>
+        )}
+
+        {schedulingActive ? (
+          schedulingBlockedByDelivery ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="bg-warning/20 text-warning-foreground flex items-start gap-2 rounded-(--radius-md) px-3 py-2.5 text-xs"
+            >
+              <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span>
+                Este local todavía no programa pedidos con delivery. Elegí retiro para programar, o dejá el envío para
+                &quot;Para ahora&quot;.
+              </span>
+            </div>
+          ) : scheduleGroups === null ? (
+            <p className="text-muted-foreground text-sm">Buscando horarios disponibles…</p>
+          ) : (
+            <SchedulePicker
+              groups={scheduleGroups}
+              timeZone={timezone}
+              activeNight={activeNight}
+              onActiveNightChange={setActiveNight}
+              selectedIso={scheduledIso}
+              onSelect={setScheduledIso}
+              invalid={!!fieldErrors.scheduledFor}
+            />
+          )
+        ) : null}
+
+        {fieldErrors.scheduledFor ? <p className="text-destructive text-xs">{fieldErrors.scheduledFor}</p> : null}
+      </Panel>
+
       <Panel className="flex flex-col gap-2 p-4 sm:p-5">
         <h2 className="text-sm font-semibold">Tu pedido</h2>
         {quote.status === 'loading' ? (
@@ -624,7 +806,14 @@ export function CheckoutForm({
             type="submit"
             size="lg"
             className="h-12 flex-1 rounded-pill text-base"
-            disabled={isPreview || submitting || quote.status !== 'ready' || belowMinimum}
+            disabled={
+              isPreview ||
+              submitting ||
+              quote.status !== 'ready' ||
+              belowMinimum ||
+              schedulingBlockedByDelivery ||
+              (schedulingActive && !scheduledIso)
+            }
             aria-disabled={isPreview}
           >
             {isPreview ? (
@@ -637,7 +826,7 @@ export function CheckoutForm({
             ) : effectivePaymentMethod === 'online' ? (
               'Ir a pagar'
             ) : (
-              `Confirmar pedido · ${effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen' : 'Pagás al retirar'}`
+              `Confirmar pedido${schedulingActive && scheduledIso ? ` para las ${formatTime(scheduledIso, timezone)}` : ''} · ${effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen' : 'Pagás al retirar'}`
             )}
           </Button>
         </div>

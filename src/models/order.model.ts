@@ -8,6 +8,13 @@ import { log } from '@/lib/log'
 import { formatCentsCompact, scaleUpInt, sumCents } from '@/lib/money'
 import { productImageUrl } from '@/lib/storage'
 import { canCollectPayment } from '@/lib/store-availability'
+import {
+  commercialNightOf,
+  isOpenAt,
+  SCHEDULE_HORIZON_DAYS,
+  SCHEDULE_LEAD_MINUTES,
+  SCHEDULE_STEP_MINUTES,
+} from '@/lib/store-hours'
 import { getCourierAvailability } from '@/models/courier.model'
 import { toStore, type StoreRow } from '@/models/mappers/store.mapper'
 import {
@@ -42,9 +49,13 @@ import type {
   PricedCart,
   PricedItem,
   SalesPoint,
+  ScheduledNightSummary,
   Store,
   StoreDashboard,
   StoreDashboardRpc,
+  StoreHoursOverride,
+  StoreHoursRange,
+  StoreSchedule,
   TopProduct,
 } from '@/models/types'
 import type { Database, Json } from '@/lib/supabase/database.types'
@@ -156,6 +167,10 @@ function toOrder(row: OrderRow & { courier?: CourierEmbed }, items: OrderItem[])
     courierName: row.courier?.display_name ?? null,
     assignedAt: row.assigned_at,
     onTheWayAt: row.on_the_way_at,
+
+    scheduledFor: row.scheduled_for,
+    fireAt: row.fire_at,
+    scheduledNight: row.scheduled_night,
   }
 }
 
@@ -212,6 +227,7 @@ function toOrderPublicView(row: OrderWithItemsAndStore): OrderPublicView {
     deliveryMethod: row.delivery_method as DeliveryMethod,
     deliveryFeeCents: row.delivery_fee_cents,
     deliveryAddress: toDeliveryAddress(row),
+    scheduledFor: row.scheduled_for,
     courierFirstName,
     storeName: row.stores?.name ?? '',
     storeSlug: row.stores?.slug ?? '',
@@ -383,6 +399,11 @@ export async function estimateEta(store: Store, baseMinutes: number, deliveryMin
     .select('id', { count: 'exact', head: true })
     .eq('store_id', store.id)
     .in('status', [...COOKING_STATUSES])
+    // Un programado que todavía no disparó está parado esperando su hora, no
+    // en la plancha: contarlo infla el ETA de todos los pedidos inmediatos del
+    // medio. Espejo de `private.active_order_count` en Postgres (§5.3) — los
+    // dos lados tienen que excluirlo, uno en TS y otro en la base.
+    .or(`fire_at.is.null,fire_at.lte.${new Date().toISOString()}`)
 
   if (error) {
     log.error(CTX, 'no se pudo estimar el tiempo de espera', error, { storeId: store.id })
@@ -415,6 +436,72 @@ export async function estimateEta(store: Store, baseMinutes: number, deliveryMin
 //    la cabecera y el delete, quedaba un pedido `confirmed` sin ítems visible
 //    en el KDS. La función SQL ya es idempotente por (store_id, idempotency_key).
 // ---------------------------------------------------------------------------
+
+/**
+ * Lee el calendario del local con una query propia del admin client.
+ *
+ * No pasa por `store-hours.model.ts` (T1): ese archivo lee con el cliente de
+ * SESIÓN porque lo llama el staff logueado desde Ajustes. Acá el checkout es
+ * anónimo — no hay sesión de la que las RLS puedan tirar — así que es el
+ * mismo patrón que `priceCart`/`estimateEta`: admin client, y la tabla ya
+ * tiene lectura pública igual (`store_hours_public_read`).
+ *
+ * Sin filtro de fecha en los overrides a propósito: la tabla es chica (un
+ * feriado por vez, no un calendario completo) y filtrar acá duplicaría en
+ * TypeScript el mismo cálculo de ventana que ya hace `isOpenAt`/
+ * `commercialNightOf` puro.
+ */
+async function getStoreScheduleForOrder(storeId: number): Promise<StoreSchedule> {
+  const admin = createAdminClient()
+
+  const [weeklyResult, overridesResult] = await Promise.all([
+    admin.from('store_hours').select('day_of_week, opens_at_minute, duration_minutes').eq('store_id', storeId),
+    admin
+      .from('store_hours_overrides')
+      .select('on_date, is_closed, opens_at_minute, duration_minutes')
+      .eq('store_id', storeId),
+  ])
+
+  if (weeklyResult.error || overridesResult.error) {
+    log.error(CTX, 'no se pudo leer el calendario de la tienda', weeklyResult.error ?? overridesResult.error, { storeId })
+    throw new Error(`No se pudo leer el horario de la tienda: ${(weeklyResult.error ?? overridesResult.error)?.message}`)
+  }
+
+  const weekly: StoreHoursRange[] = (weeklyResult.data ?? []).map((row) => ({
+    dayOfWeek: row.day_of_week,
+    opensAtMinute: row.opens_at_minute,
+    durationMinutes: row.duration_minutes,
+  }))
+
+  // Varias filas por fecha (un override abierto puede tener varios rangos):
+  // se agrupan por `on_date` antes de devolver la forma que espera la lib.
+  const overridesByDate = new Map<string, StoreHoursOverride>()
+  for (const row of overridesResult.data ?? []) {
+    if (row.is_closed) {
+      overridesByDate.set(row.on_date, { date: row.on_date, isClosed: true, ranges: [] })
+      continue
+    }
+    const existing = overridesByDate.get(row.on_date)
+    const ranges = existing?.ranges ?? []
+    // Un override sin `is_closed` siempre tiene rango (lo garantiza el CHECK
+    // de la tabla): el `!` es seguro acá y no en el shape general de la fila.
+    ranges.push({ opensAtMinute: row.opens_at_minute!, durationMinutes: row.duration_minutes! })
+    overridesByDate.set(row.on_date, { date: row.on_date, isClosed: false, ranges })
+  }
+
+  return { weekly, overrides: [...overridesByDate.values()] }
+}
+
+/**
+ * `create_order` marca el tope de la noche lleno con un mensaje que arranca
+ * con este texto (ver la migración de pedidos programados) — es lo que
+ * distingue "la noche está completa" de cualquier otro error de la RPC.
+ */
+const SCHEDULED_NIGHT_FULL_MARKER = 'scheduled_night_full'
+
+function isScheduledNightFull(err: { message?: string } | null | undefined): boolean {
+  return (err?.message ?? '').includes(SCHEDULED_NIGHT_FULL_MARKER)
+}
 
 async function findOrderIdByIdempotencyKey(storeId: number, key: string): Promise<number | null> {
   const admin = createAdminClient()
@@ -464,6 +551,66 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
     throw new DomainError('Esta tienda no acepta pago al retirar')
   }
 
+  // El cliente manda UN INSTANTE (o nada); todo lo demás —granularidad, lead,
+  // horizonte, si cae dentro de horario, la noche comercial— lo deriva el
+  // servidor, igual que los precios. `fire_at` y el tope de la noche los
+  // calcula la RPC, nunca acá.
+  const schedule = await getStoreScheduleForOrder(store.id)
+  const now = new Date()
+  const isScheduled = parsed.scheduledFor != null
+  let scheduledForDate: Date | null = null
+  let scheduledNight: string | null = null
+
+  if (!isScheduled) {
+    // Guarda nueva: antes una tienda cerrada por horario (sin `accepting_orders`
+    // en juego, que ya se chequeó arriba) dejaba pedir igual porque el horario
+    // ni existía como concepto.
+    if (!isOpenAt(schedule, now, store.timezone)) {
+      throw new DomainError('La cocina está cerrada. Podés programar un pedido para cuando abra.')
+    }
+  } else {
+    scheduledForDate = new Date(parsed.scheduledFor!)
+
+    // Múltiplo exacto de 15 minutos: la lista de turnos que vio el cliente es
+    // canónica, así que cualquier otro instante es o un bug del cliente o
+    // alguien pegándole al endpoint a mano.
+    if (
+      scheduledForDate.getUTCSeconds() !== 0 ||
+      scheduledForDate.getUTCMilliseconds() !== 0 ||
+      scheduledForDate.getUTCMinutes() % SCHEDULE_STEP_MINUTES !== 0
+    ) {
+      throw new DomainError('Elegí un horario de la lista de turnos disponibles')
+    }
+
+    const minutesUntilScheduled = (scheduledForDate.getTime() - now.getTime()) / 60_000
+
+    // LEAD MÍNIMO: 60 MINUTOS PLANOS, SIN FÓRMULA. Decisión del dueño del
+    // producto tomada viendo la aritmética (2026-08-29): un carrito pesado con
+    // envío puede necesitar más de 60 minutos de cocción + viaje, y en ese caso
+    // `fire_at` (que calcula `create_order` restando cocción+viaje+margen del
+    // instante pactado) queda EN EL PASADO. Eso no es un bug: el pedido entra
+    // al KDS en el próximo poll, que es la recuperación correcta ("ya vas
+    // tarde, arrancá"). NO "arreglar" esto clampeando a `now()` ni subiendo el
+    // piso por una fórmula con prep/delivery — ya se evaluó y se descartó.
+    if (minutesUntilScheduled < SCHEDULE_LEAD_MINUTES) {
+      throw new DomainError(`Programá tu pedido con al menos ${SCHEDULE_LEAD_MINUTES} minutos de anticipación`)
+    }
+
+    const horizonMinutes = SCHEDULE_HORIZON_DAYS * 24 * 60
+    if (minutesUntilScheduled > horizonMinutes) {
+      throw new DomainError(`Solo podés programar pedidos hasta ${SCHEDULE_HORIZON_DAYS} días por adelantado`)
+    }
+
+    // Misma lib que usó el browser para pintar el selector de turnos: si acá
+    // dijera otra cosa, el cliente vería "cerrado" después de haber elegido un
+    // horario que la pantalla anterior le ofreció como válido.
+    if (!isOpenAt(schedule, scheduledForDate, store.timezone)) {
+      throw new DomainError('Ese horario ya no está disponible. Elegí otro turno.')
+    }
+
+    scheduledNight = commercialNightOf(schedule, scheduledForDate, store.timezone)
+  }
+
   const priced = await priceCart(store, parsed.items)
 
   // El mínimo general se evalúa sobre el SUBTOTAL, no sobre el total con
@@ -489,15 +636,50 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
     }
 
     deliveryFeeCents = deliveryFeeFor(store.delivery, priced.subtotalCents)
-    const availability = await getCourierAvailability(store.id)
-    deliveryMinutes = deliveryMinutesFor(store.delivery, availability.freeCouriers)
+
+    if (isScheduled) {
+      // Q2: política del dueño (¿se puede programar CON envío?) + realidad
+      // (¿hay alguien que lo lleve?) — mismo par que `acceptingOrders` +
+      // `canCollectPayment`. Si el repartidor se desactiva DESPUÉS de creado
+      // el pedido no pasa nada especial: el pedido queda y se ve en la bandeja.
+      if (!store.scheduling.deliveryEnabled) {
+        throw new DomainError('Este local no permite programar pedidos con envío')
+      }
+      const availability = await getCourierAvailability(store.id)
+      if (availability.activeCouriers < 1) {
+        throw new DomainError('No hay repartidores disponibles para programar un envío')
+      }
+      // PLANO, nunca `busyMinutes`: la ocupación de la flota AHORA no describe
+      // la de la noche programada (§6 de la arquitectura).
+      deliveryMinutes = store.delivery.minutes
+    } else {
+      const availability = await getCourierAvailability(store.id)
+      deliveryMinutes = deliveryMinutesFor(store.delivery, availability.freeCouriers)
+    }
   }
 
-  const eta = await estimateEta(store, priced.basePrepMinutes, deliveryMinutes ?? 0)
+  // El multiplicador de demanda medido AHORA no dice nada de la plancha a la
+  // hora pactada: un programado no mide nada de eso, y "en X minutos" no
+  // aplica cuando la promesa es una hora de pared. La tabla completa está en
+  // 00-architecture.md §6.
+  let demandMultiplier: number | null
+  let etaMinutes: number | null
+  let etaAt: string
+
+  if (isScheduled) {
+    demandMultiplier = null
+    etaMinutes = null
+    // La promesa ES el ETA.
+    etaAt = scheduledForDate!.toISOString()
+  } else {
+    const eta = await estimateEta(store, priced.basePrepMinutes, deliveryMinutes ?? 0)
+    demandMultiplier = eta.multiplier
+    etaMinutes = eta.etaMinutes
+    etaAt = new Date(Date.now() + eta.etaMinutes * 60_000).toISOString()
+  }
 
   const isOnline = parsed.paymentMethod === 'online'
   const initialStatus: OrderStatus = isOnline ? 'pending' : 'confirmed'
-  const etaAt = new Date(Date.now() + eta.etaMinutes * 60_000).toISOString()
 
   // `orders_total_is_subtotal_plus_delivery_check` es la red de seguridad: si
   // acá se rompe la suma, el insert rebota con 23514 en vez de guardar un
@@ -516,8 +698,8 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
     subtotal_cents: priced.subtotalCents,
     total_cents: totalCents,
     base_prep_minutes: priced.basePrepMinutes,
-    demand_multiplier: eta.multiplier,
-    eta_minutes: eta.etaMinutes,
+    demand_multiplier: demandMultiplier,
+    eta_minutes: etaMinutes,
     eta_at: etaAt,
     payment_method: parsed.paymentMethod,
     payment_status: 'pending',
@@ -530,6 +712,13 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
     delivery_address_unit: isDelivery ? (parsed.deliveryAddressUnit ?? null) : null,
     delivery_address_between: isDelivery ? (parsed.deliveryAddressBetween ?? null) : null,
     delivery_address_notes: isDelivery ? (parsed.deliveryAddressNotes ?? null) : null,
+    // `fire_at` NO viaja acá: lo calcula la RPC, dentro de la transacción, con
+    // los minutos de cocción y viaje que ya le mandamos arriba. El tope por
+    // noche también lo arbitra la RPC (advisory lock + conteo): un `if` acá
+    // pierde la carrera cuando dos clientes agarran el último lugar juntos.
+    scheduled_for: isScheduled ? scheduledForDate!.toISOString() : null,
+    scheduled_night: scheduledNight,
+    night_capacity: isScheduled ? store.scheduling.capacityPerNight : null,
   }
 
   const p_items = priced.items.map((item) => ({
@@ -556,6 +745,13 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
   let orderId = rpcOrderId ?? null
 
   if (rpcError || orderId == null) {
+    // El tope por noche lo arbitra la RPC, en la misma transacción que cuenta
+    // (advisory lock + count): acá solo se TRADUCE su rechazo a un mensaje de
+    // interfaz. El marcador estable evita confundirlo con cualquier otro error
+    // de la función — nunca llega crudo al browser.
+    if (isScheduledNightFull(rpcError)) {
+      throw new DomainError('Esa noche ya está completa. Elegí otro día.')
+    }
     // La función ya resuelve la carrera de idempotencia sola (select antes del
     // insert, y de nuevo si el índice rebota con 23505); si igual llega acá con
     // el índice de idempotencia en el mensaje, es defensivo. Cualquier otro
@@ -704,6 +900,11 @@ export async function getActiveOrders(storeId: number): Promise<Order[]> {
     .select(ORDER_WITH_ITEMS_SELECT)
     .eq('store_id', storeId)
     .in('status', [...ACTIVE_STATUSES])
+    // ES el criterio del feature: un programado en espera (fire_at en el
+    // futuro) no es trabajo de cocina todavía. Esta query es el ÚNICO origen
+    // del tablero del KDS (carga inicial, poll de 30s y refetch de Realtime),
+    // así que filtrar acá filtra el tablero entero, campana incluida.
+    .or(`fire_at.is.null,fire_at.lte.${new Date().toISOString()}`)
     .order('created_at', { ascending: true })
 
   if (error) {
@@ -734,6 +935,204 @@ export async function getOrderHistory(
     throw new Error(`No se pudo leer el historial: ${error.message}`)
   }
   return ((data ?? []) as unknown as OrderWithItems[]).map((row) => toOrder(row, row.order_items.map(toOrderItem)))
+}
+
+// ---------------------------------------------------------------------------
+// Programados — la bandeja de /admin/pedidos y el apagado destructivo.
+// ---------------------------------------------------------------------------
+
+/**
+ * Programados vivos, para la bandeja "Programados" de `/admin/pedidos`.
+ *
+ * Ordenado por `scheduled_for`, NUNCA por `created_at`: el historial de
+ * pedidos acota por fecha de creación, y un programado para dentro de 3 días
+ * se creó HOY — con `created_at` caería "bajo hoy" en cualquier filtro que
+ * asuma que reciente = próximo a pasar. La ventana de 1 hora hacia atrás deja
+ * ver un rato el que acaba de disparar, en vez de desaparecer de la bandeja
+ * en el instante exacto en que entra al KDS.
+ */
+export async function getScheduledOrders(storeId: number): Promise<Order[]> {
+  const supabase = await createClient()
+  const cutoff = new Date(Date.now() - 60 * 60_000).toISOString()
+
+  const { data, error } = await supabase
+    .from('orders')
+    .select(ORDER_WITH_ITEMS_SELECT)
+    .eq('store_id', storeId)
+    .not('scheduled_for', 'is', null)
+    .in('status', ['pending', 'confirmed'])
+    .gte('scheduled_for', cutoff)
+    .order('scheduled_for', { ascending: true })
+
+  if (error) {
+    log.error(CTX, 'no se pudieron leer los pedidos programados', error, { storeId })
+    throw new Error(`No se pudieron leer los pedidos programados: ${error.message}`)
+  }
+  return ((data ?? []) as unknown as OrderWithItems[]).map((row) => toOrder(row, row.order_items.map(toOrderItem)))
+}
+
+/**
+ * La vista previa del diálogo destructivo (Q4/Q9): cuántos programados de
+ * `night` todavía no dispararon, cuántos de esos están pagos, y cuánta plata
+ * hay que devolver a mano si se confirma.
+ *
+ * ES UNA FOTO, no la cancelación: usa el MISMO predicado que
+ * `cancel_scheduled_orders` (`fire_at > now()`, status vivo) para que el
+ * número que ve el dueño coincida con lo que la RPC va a tocar — pero entre
+ * que se pinta el diálogo y se confirma, un pedido puede disparar y salir del
+ * conteo. Es esperado (00-architecture.md §7.8.1): "el diálogo puede decir 6
+ * y cancelarse 5 porque uno disparó en el medio — correcto".
+ *
+ * `status in ('pending','confirmed')` acá es CORRECTO y NO es el mismo caso
+ * que `countScheduledByNight` (más abajo): esto pregunta "¿qué va a cancelar
+ * `cancel_scheduled_orders` si confirmo?", y esa RPC solo toca pedidos vivos
+ * — un `delivered` no se cancela nunca, así que no tiene que aparecer en este
+ * conteo. `countScheduledByNight` pregunta otra cosa ("¿cuánto lugar de la
+ * noche ya está ocupado?") y por eso cuenta distinto (`status <>
+ * 'cancelled'`, `delivered` incluido). Ver el comentario de esa función antes
+ * de "alinear" esta también — no hay que hacerlo, las dos preguntas son
+ * distintas a propósito (03-review.md §B2).
+ */
+export async function getScheduledNightSummary(storeId: number, night: string): Promise<ScheduledNightSummary> {
+  const supabase = await createClient()
+  const nowIso = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from('orders')
+    .select('total_cents, payment_status')
+    .eq('store_id', storeId)
+    .eq('scheduled_night', night)
+    .gt('fire_at', nowIso)
+    .in('status', ['pending', 'confirmed'])
+
+  if (error) {
+    log.error(CTX, 'no se pudo previsualizar la cancelación de la noche', error, { storeId, night })
+    throw new Error(`No se pudo previsualizar la cancelación: ${error.message}`)
+  }
+
+  const rows = data ?? []
+  const paidRows = rows.filter((r) => r.payment_status === 'approved')
+
+  return {
+    night,
+    count: rows.length,
+    paidCount: paidRows.length,
+    paidTotalCents: sumCents(paidRows.map((r) => r.total_cents)),
+  }
+}
+
+/**
+ * Conteo de programados por noche, para la capa UX del tope (§7.3.1): cuántos
+ * lugares ya están tomados en cada noche del horizonte, para que el checkout
+ * (anónimo, admin client) pueda decidir qué noches ocultar del selector ANTES
+ * de que el cliente elija un turno que la transacción va a rechazar.
+ *
+ * **`status <> 'cancelled'`, NO `in ('pending','confirmed')`** — y esto es
+ * contraintuitivo a propósito, no un descuido: tiene que decir EXACTAMENTE lo
+ * mismo que cuenta `create_order` dentro de la transacción (migración de
+ * pedidos programados, cálculo de `v_taken`), porque es el árbitro real y esta
+ * función es solo la foto que evita ofrecer un turno que la RPC va a rechazar.
+ * Un pedido que ya disparó y avanzó (`preparing`/`ready`/`on_the_way`/
+ * `delivered`) SIGUE ocupando su lugar de esa noche: la cocina ya lo hizo, y
+ * si el conteo bajara al avanzar el estado se liberarían lugares que no
+ * existen — justo en la avalancha del viernes a las 21:00, cuando ya hay
+ * pedidos entregándose y otros entrando, que es el escenario que el tope
+ * existe para atender. Filtrar por `pending`/`confirmed` (como hace
+ * `getScheduledNightSummary`, más abajo, para el diálogo de cancelación —
+ * y ahí SÍ es correcto, porque esa función refleja qué va a cancelar
+ * `cancel_scheduled_orders`, no cuánto lugar queda) hace que la noche se
+ * muestre "con lugar" en el browser mientras el servidor la sigue rechazando,
+ * cada vez más a medida que avanza la noche. Verificado en vivo contra
+ * Postgres (`03-review.md` §B2): con capacidad 1 y un pedido ya `delivered`,
+ * el conteo viejo daba 0 ("hay lugar") y `create_order` rechazaba con
+ * `scheduled_night_full` igual.
+ */
+export async function countScheduledByNight(storeId: number, nights: string[]): Promise<Record<string, number>> {
+  if (nights.length === 0) return {}
+
+  const admin = createAdminClient()
+  const { data, error } = await admin
+    .from('orders')
+    .select('scheduled_night')
+    .eq('store_id', storeId)
+    .in('scheduled_night', nights)
+    .neq('status', 'cancelled')
+
+  if (error) {
+    log.error(CTX, 'no se pudo contar los programados por noche', error, { storeId, nights })
+    throw new Error(`No se pudo contar los programados por noche: ${error.message}`)
+  }
+
+  const counts: Record<string, number> = {}
+  for (const row of data ?? []) {
+    if (!row.scheduled_night) continue
+    counts[row.scheduled_night] = (counts[row.scheduled_night] ?? 0) + 1
+  }
+  return counts
+}
+
+/** Lo que devuelve de verdad `cancel_scheduled_orders` — ver el JSDoc de `cancelScheduledNight`. */
+export type CancelScheduledNightResult = {
+  /** Ids cancelados, para que el caller les dispare `order_cancelled` uno por uno. */
+  cancelledIds: number[]
+  cancelledCount: number
+  /** Lo que el local tiene que devolver A MANO por Mercado Pago (Q8: sin auto-refund). */
+  paidCents: number
+}
+
+/**
+ * El apagado destructivo (Q4/Q9) y el cierre de una fecha con programados
+ * adentro (Q14) comparten esta función: los dos cancelan `scheduled_night =
+ * night AND fire_at > now() AND status in ('pending','confirmed')` de la
+ * tienda, vía la RPC `cancel_scheduled_orders` — SECURITY DEFINER, cliente de
+ * SESIÓN (verifica `is_store_member` en el cuerpo; con el admin client
+ * `auth.uid()` no existe y la RPC rechaza siempre, mismo patrón que
+ * `store_couriers`).
+ *
+ * **Desviación documentada de la firma que trae `01-tasks.md`.** El borrador
+ * del plan proponía `{ cancelledIds, count, paidCount, paidTotalCents }`, pero
+ * la migración YA ESCRITA (`cancel_scheduled_orders`, ground truth de
+ * Postgres) devuelve `{ cancelledIds, cancelled, paidCents }` — sin
+ * `paidCount`, porque contarlo exigiría una segunda query dentro de la misma
+ * transacción que nadie pidió. `paidCount` ya lo tiene quien llamó
+ * `getScheduledNightSummary` para pintar el diálogo ANTES de confirmar; no
+ * hace falta repetirlo en el resultado de la cancelación.
+ *
+ * **`opts.pause` — la RPC hace MÁS que cancelar.** `cancel_scheduled_orders`
+ * acepta `p_pause` y, si es `true`, apaga `stores.accepting_orders` DENTRO DE
+ * LA MISMA TRANSACCIÓN que cancela — es justamente la atomicidad que
+ * `00-architecture.md §7.8.1` pedía lograr con dos pasos ("cerrar la puerta
+ * antes de barrer"; "si la RPC falla después del toggle, la puerta quedó
+ * cerrada"). Con `p_pause` ya no hace falta el paso separado: quien orqueste
+ * "pausar pedidos" (T1, `pauseScheduledNightAction`) tiene que llamar
+ * `cancelScheduledNight(storeId, night, { pause: true })` y NO togglear
+ * `accepting_orders` aparte — hacerlo aparte reintroduce la ventana de falla
+ * parcial que la RPC ya cerró. Para el cierre de una fecha (Q14), que no toca
+ * `accepting_orders`, se llama sin `opts` (`pause` default `false`).
+ */
+export async function cancelScheduledNight(
+  storeId: number,
+  night: string,
+  opts?: { pause?: boolean },
+): Promise<CancelScheduledNightResult> {
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc('cancel_scheduled_orders', {
+    p_store_id: storeId,
+    p_night: night,
+    p_pause: opts?.pause ?? false,
+  })
+
+  if (error) {
+    log.error(CTX, 'no se pudo cancelar los programados de la noche', error, { storeId, night })
+    throw new Error(`No se pudo cancelar los programados de la noche: ${error.message}`)
+  }
+
+  const result = (data ?? {}) as { cancelledIds?: number[]; cancelled?: number; paidCents?: number }
+  return {
+    cancelledIds: result.cancelledIds ?? [],
+    cancelledCount: result.cancelled ?? 0,
+    paidCents: result.paidCents ?? 0,
+  }
 }
 
 /**
@@ -1061,7 +1460,7 @@ export async function refreshFrozenEta(orderId: number): Promise<void> {
 
   const { data: orderRow, error: orderError } = await admin
     .from('orders')
-    .select('store_id, base_prep_minutes, delivery_method')
+    .select('store_id, base_prep_minutes, delivery_method, scheduled_for')
     .eq('id', orderId)
     .maybeSingle()
 
@@ -1069,6 +1468,13 @@ export async function refreshFrozenEta(orderId: number): Promise<void> {
     log.error(CTX, 'no se pudo releer el pedido para recalcular el ETA', orderError ?? undefined, { orderId })
     return
   }
+
+  // Un programado NO recalcula: `eta_at = scheduled_for` es la promesa, y un
+  // pago que se aprueba media hora después no puede correrla. Además
+  // `demand_multiplier`/`eta_minutes` quedan `null` a propósito (§6) — pisarlos
+  // acá con un multiplicador medido ahora sería reintroducir exactamente lo
+  // que ese `null` viene a evitar.
+  if (orderRow.scheduled_for != null) return
 
   const { data: storeRow, error: storeError } = await admin
     .from('stores')

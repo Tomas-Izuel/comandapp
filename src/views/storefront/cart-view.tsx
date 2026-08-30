@@ -33,12 +33,18 @@ export function CartView({
   storeSlug,
   storeName,
   currency,
-  acceptingOrders,
+  blocked,
 }: {
   storeSlug: string
   storeName: string
   currency: string
-  acceptingOrders: boolean
+  /**
+   * Ya resuelto por la page con `storefrontGate()`. `true` solo para los
+   * tres estados de la precedencia que de verdad no dejan pedir
+   * (`suspended`/`no_payment`/`paused`) — `closed_by_hours` NO bloquea el
+   * carrito, esa decisión (ahora/programar) es del checkout.
+   */
+  blocked: boolean
 }) {
   const router = useRouter()
   const { lines, hydrated, removeLine, setQuantity } = useCart()
@@ -67,7 +73,7 @@ export function CartView({
     )
   }
 
-  const canProceed = acceptingOrders && !isLoading && !hasErrors && lines.length > 0
+  const canProceed = !blocked && !isLoading && !hasErrors && lines.length > 0
 
   function handleStepperChange(index: number, next: number) {
     if (next <= 0) {
@@ -93,7 +99,7 @@ export function CartView({
         ) : null}
       </div>
 
-      {!acceptingOrders ? <ClosedNotice storeName={storeName} className="mt-3" /> : null}
+      {blocked ? <ClosedNotice storeName={storeName} className="mt-3" /> : null}
 
       {cartError ? (
         <div className="mx-auto w-full max-w-(--content-max) px-4 pt-3 sm:px-6">
@@ -234,7 +240,7 @@ export function CartView({
           disabled={!canProceed}
           onClick={() => router.push(storeHref(basePath, '/checkout'))}
         >
-          {acceptingOrders ? 'Ir a pagar' : 'El local no está tomando pedidos'}
+          {blocked ? 'El local no está tomando pedidos' : 'Ir a pagar'}
         </Button>
       </ActionBar>
     </div>

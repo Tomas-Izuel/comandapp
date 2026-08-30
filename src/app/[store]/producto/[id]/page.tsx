@@ -1,5 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getProductDetail } from '@/controllers/storefront.controller'
+import { getStoreHoursData } from '@/models/store-hours.model'
+import { storefrontGate } from '@/lib/store-hours'
 import { ProductDetailView } from '@/views/storefront/product-detail'
 
 export default async function ProductPage(props: PageProps<'/[store]/producto/[id]'>) {
@@ -13,6 +15,13 @@ export default async function ProductPage(props: PageProps<'/[store]/producto/[i
   // del mismo tipo `ProductDetailData`), así que queda sin usar de este lado
   // a propósito, no por descuido.
   const { store, product } = await getProductDetail(slug, productId)
+  const schedule = await getStoreHoursData(store.id)
+  const gate = storefrontGate(store, schedule, new Date(), store.timezone)
 
-  return <ProductDetailView store={store} product={product} />
+  // `closed_by_hours` sigue dejando armar el carrito desde la ficha (la
+  // decisión de "para ahora"/"programar" es del checkout); los otros tres
+  // estados de la precedencia bloquean, igual que hoy.
+  const blocked = gate.kind !== 'open' && gate.kind !== 'closed_by_hours'
+
+  return <ProductDetailView store={store} product={product} blocked={blocked} />
 }
