@@ -47,6 +47,15 @@ jobs:
       # único lockfile trackeado, el gestor real de este repo es npm).
       - run: npm ci
 
+      # `PageProps`, `LayoutProps` y `RouteContext` no se importan: son globales
+      # que Next GENERA en `.next/types/`, y la doc de la version instalada lo
+      # dice textual — "generated when running either next dev, next build or
+      # next typegen". En una maquina de desarrollo ya existen porque corrio
+      # `next dev`; en un checkout limpio no, y `tsc --noEmit` falla con 21
+      # `TS2304: Cannot find name 'PageProps'` antes de llegar al build que los
+      # habria creado. `typegen` hace solo esa parte, sin compilar la app.
+      - run: npx next typegen
+
       - run: npm run typecheck
       - run: npm run lint
 
