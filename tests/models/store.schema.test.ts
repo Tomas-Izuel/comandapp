@@ -3,6 +3,8 @@ import {
   storeHoursOverrideInputSchema,
   storeHoursRangeSchema,
   storeHoursWeeklyInputSchema,
+  storeOrderingInputSchema,
+  storeProfileInputSchema,
   storeSettingsInputSchema,
 } from '@/models/schemas/store.schema'
 
@@ -249,5 +251,98 @@ describe('storeHoursOverrideInputSchema — una excepción por fecha (Q13/Q14)',
     expect(storeHoursOverrideInputSchema.safeParse(open('2026-12-24', four)).success).toBe(true)
     const five = [...four, { opensAtMinute: 900, durationMinutes: 50 }]
     expect(storeHoursOverrideInputSchema.safeParse(open('2026-12-24', five)).success).toBe(false)
+  })
+})
+
+/**
+ * Paridad `storeProfileInputSchema` + `storeOrderingInputSchema` ↔
+ * `storeSettingsInputSchema` (00-architecture.md, pipeline
+ * 2026-08-30-ajustes-por-secciones). `updateStoreSettings` escribía las 29
+ * claves de una; se partió en dos `.pick()` para que ninguna página pueda
+ * pisar una columna que no muestra. Este test es el que hace explícito el
+ * contrato: si alguien agrega una clave nueva a `storeSettingsInputSchema` y
+ * se olvida de meterla en uno de los dos `.pick()` (o la mete en los DOS),
+ * tiene que fallar acá — mismo patrón que
+ * `tests/db/reserved-slugs-parity.test.ts`, pero puramente en TypeScript
+ * porque este contrato no vive en Postgres.
+ *
+ * El conjunto de exclusiones creció de `{timezone, currency}` a
+ * `{timezone, currency, acceptingOrders}` en la ronda de arreglos posterior a
+ * `03-review.md` (hallazgo bloqueante #1), y las tres claves quedan afuera
+ * por motivos DISTINTOS — ver el detalle en cada test de abajo, no asumir que
+ * es la misma razón repetida tres veces.
+ */
+describe('paridad de cobertura: storeProfileInputSchema ∪ storeOrderingInputSchema == storeSettingsInputSchema − {timezone, currency, acceptingOrders}', () => {
+  function keysOf(schema: { shape: Record<string, unknown> }): Set<string> {
+    return new Set(Object.keys(schema.shape))
+  }
+
+  it('la unión de las dos claves picked cubre TODO el schema completo, salvo timezone, currency y acceptingOrders', () => {
+    const full = keysOf(storeSettingsInputSchema)
+    full.delete('timezone')
+    full.delete('currency')
+    full.delete('acceptingOrders')
+
+    const profile = keysOf(storeProfileInputSchema)
+    const ordering = keysOf(storeOrderingInputSchema)
+    const union = new Set([...profile, ...ordering])
+
+    const faltantes = [...full].filter((key) => !union.has(key)).sort()
+    const sobrantes = [...union].filter((key) => !full.has(key)).sort()
+
+    expect(faltantes, 'claves de storeSettingsInputSchema que ningún .pick() cubre').toEqual([])
+    expect(sobrantes, 'claves picked que no existen en storeSettingsInputSchema').toEqual([])
+  })
+
+  it('perfil y pedidos/envío NO comparten ninguna clave — cada campo tiene un solo dueño', () => {
+    const profile = keysOf(storeProfileInputSchema)
+    const ordering = keysOf(storeOrderingInputSchema)
+    const overlap = [...profile].filter((key) => ordering.has(key))
+    expect(overlap).toEqual([])
+  })
+
+  it('timezone y currency salieron del set escribible a propósito: no se editan en NINGUNA parte, así que no están en ninguno de los dos .pick()', () => {
+    const profile = keysOf(storeProfileInputSchema)
+    const ordering = keysOf(storeOrderingInputSchema)
+    for (const key of ['timezone', 'currency']) {
+      expect(profile.has(key), `${key} no debería estar en storeProfileInputSchema`).toBe(false)
+      expect(ordering.has(key), `${key} no debería estar en storeOrderingInputSchema`).toBe(false)
+    }
+  })
+
+  it('acceptingOrders sale de los DOS .pick() por un motivo distinto: SÍ se edita, pero por su propio camino inmediato, no por el submit del formulario', () => {
+    // A diferencia de timezone/currency (que no se tocan en ninguna
+    // pantalla), acceptingOrders se ve y se toca en /admin/ajustes/pedidos —
+    // solo que no viaja en el payload de `updateStoreOrdering`. Tiene su
+    // propio par de acciones inmediatas (`resumeAcceptingOrdersAction` /
+    // `pauseScheduledNightAction`) para que un submit del resto del
+    // formulario, con el valor viejo que el `useForm` tenía en memoria, no
+    // pise en silencio una pausa o una reapertura hecha desde otra pantalla
+    // mientras esta seguía abierta (03-review.md, hallazgo bloqueante #1).
+    // `storeSettingsInputSchema` SIGUE teniendo la clave (no cambió) — lo que
+    // cambió es que ninguno de los dos derivados la hereda.
+    expect(storeSettingsInputSchema.shape).toHaveProperty('acceptingOrders')
+
+    const profile = keysOf(storeProfileInputSchema)
+    const ordering = keysOf(storeOrderingInputSchema)
+    expect(profile.has('acceptingOrders'), 'acceptingOrders no debería estar en storeProfileInputSchema').toBe(false)
+    expect(ordering.has('acceptingOrders'), 'acceptingOrders no debería estar en storeOrderingInputSchema').toBe(
+      false,
+    )
+  })
+
+  it('courier_collects_payment nunca formó parte de storeSettingsInputSchema, y sigue sin estar en ninguno de los dos derivados', () => {
+    // Es el candado del código de 6 dígitos (S-03): si volviera a cualquiera
+    // de los tres schemas, cualquier staff logueado lo cambiaría posteando el
+    // formulario de nuevo, y la confirmación por código quedaría cosmética.
+    // A diferencia de acceptingOrders, esta ni siquiera vive en el schema
+    // completo — nunca tuvo un camino de escritura desde el staff, ni
+    // inmediato ni por submit.
+    const full = keysOf(storeSettingsInputSchema)
+    const profile = keysOf(storeProfileInputSchema)
+    const ordering = keysOf(storeOrderingInputSchema)
+    expect(full.has('courier_collects_payment')).toBe(false)
+    expect(profile.has('courier_collects_payment')).toBe(false)
+    expect(ordering.has('courier_collects_payment')).toBe(false)
   })
 })

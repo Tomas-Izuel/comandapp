@@ -157,6 +157,65 @@ export const storeSettingsInputSchema = z.object({
 
 export type StoreSettingsInput = z.infer<typeof storeSettingsInputSchema>
 
+/**
+ * `/admin/ajustes` (El local): datos, dirección + mapa, canales. `.pick()`
+ * sobre `storeSettingsInputSchema` — no un objeto nuevo — porque así un campo
+ * que cambia de forma en el schema base se propaga acá solo. Funciona porque
+ * la normalización "las dos o ninguna" de lat/lng NO es un `.refine()` sobre
+ * el objeto (ver el comentario de esa regla más arriba): un `ZodEffects` no
+ * tiene `.pick()`.
+ */
+export const storeProfileInputSchema = storeSettingsInputSchema.pick({
+  name: true,
+  description: true,
+  phoneE164: true,
+  whatsappPhoneE164: true,
+  address: true,
+  latitude: true,
+  longitude: true,
+  instagramHandle: true,
+  mapsUrl: true,
+  rappiUrl: true,
+  pedidosYaUrl: true,
+  uberEatsUrl: true,
+})
+export type StoreProfileInput = z.infer<typeof storeProfileInputSchema>
+
+/**
+ * `/admin/ajustes/pedidos` (Pedidos y envío): pago en el local, envío propio,
+ * programados, multiplicador de demanda ("tomando pedidos" se ve y se toca en
+ * esta misma página, pero no viaja en este schema — ver el comentario de
+ * `acceptingOrders` abajo). Estos campos viven juntos a propósito — ver
+ * 00-architecture.md: `scheduledDeliveryEnabled` depende de `deliveryEnabled`
+ * y los minutos de viaje entran al mismo cálculo de ETA que el multiplicador.
+ */
+export const storeOrderingInputSchema = storeSettingsInputSchema.pick({
+  // `acceptingOrders` NO entra acá a propósito. Tiene su propio camino de
+  // escritura inmediato en las DOS direcciones: apagar pasa por
+  // `pauseScheduledNightAction` (el RPC `cancel_scheduled_orders` apaga
+  // `accepting_orders` en la misma transacción que cancela los programados) y
+  // prender por `resumeAcceptingOrdersAction` (ver store.model.ts). Si
+  // siguiera acá, un submit del resto del formulario con el valor viejo en el
+  // `useForm` pisaría — en cualquiera de los dos sentidos — una pausa o una
+  // reapertura hecha desde otro dispositivo mientras la pantalla seguía
+  // abierta. Ver 03-review.md, hallazgo bloqueante #1.
+  inStorePaymentEnabled: true,
+  minOrderCents: true,
+  autoStartOrders: true,
+  autoReadyOrders: true,
+  deliveryEnabled: true,
+  deliveryFeeCents: true,
+  deliveryFreeFromCents: true,
+  deliveryMinOrderCents: true,
+  deliveryMinutes: true,
+  deliveryBusyMinutes: true,
+  scheduledDeliveryEnabled: true,
+  scheduledCapacityPerNight: true,
+  demandThresholdOrders: true,
+  demandMultiplier: true,
+})
+export type StoreOrderingInput = z.infer<typeof storeOrderingInputSchema>
+
 // ---------------------------------------------------------------------------
 // Horarios de apertura y sus excepciones por fecha.
 //

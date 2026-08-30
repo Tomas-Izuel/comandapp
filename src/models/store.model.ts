@@ -5,7 +5,12 @@ import { createClient, getCurrentUser } from '@/lib/supabase/server'
 import { DomainError } from '@/lib/errors'
 import { toStore, type StoreRow } from '@/models/mappers/store.mapper'
 import { DEFAULT_BRANDING, brandingSchema, type Branding } from '@/models/schemas/branding.schema'
-import { storeSettingsInputSchema, type StoreSettingsInput } from '@/models/schemas/store.schema'
+import {
+  storeProfileInputSchema,
+  storeOrderingInputSchema,
+  type StoreProfileInput,
+  type StoreOrderingInput,
+} from '@/models/schemas/store.schema'
 import type { Store, StoreWithBranding } from '@/models/types'
 import type { Database } from '@/lib/supabase/database.types'
 
@@ -161,12 +166,18 @@ export const requireStoreMembership = cache(
   },
 )
 
-export async function updateStoreSettings(storeId: number, input: StoreSettingsInput): Promise<void> {
-  // Ajustes (nombre, horario, si acepta pedidos) son una decisión del
-  // negocio, no de la caja: cualquier staff logueado puede tocarlos. Solo
-  // pagos exige `{ role: 'owner' }` (S-03, ver admin.actions.ts).
+/**
+ * `/admin/ajustes` (El local). Solo sus 12 columnas: si escribiera las 29 de
+ * `stores`, una página que no ve "Pedidos y envío" borraría la tarifa de
+ * envío del que sí la configuró — ese era el bug que motivó partir
+ * `updateStoreSettings` en dos (00-architecture.md).
+ */
+export async function updateStoreProfile(storeId: number, input: StoreProfileInput): Promise<void> {
+  // Ajustes (nombre, dirección, canales) son una decisión del negocio, no de
+  // la caja: cualquier staff logueado puede tocarlos. Solo pagos exige
+  // `{ role: 'owner' }` (S-03, ver admin.actions.ts).
   await requireStoreMembership(storeId)
-  const parsed = storeSettingsInputSchema.parse(input)
+  const parsed = storeProfileInputSchema.parse(input)
   const supabase = await createClient()
 
   // "Las dos o ninguna" se normaliza acá en vez de con un `.refine()` sobre el
@@ -185,15 +196,6 @@ export async function updateStoreSettings(storeId: number, input: StoreSettingsI
       phone_e164: parsed.phoneE164,
       whatsapp_phone_e164: parsed.whatsappPhoneE164,
       address: parsed.address,
-      timezone: parsed.timezone,
-      currency: parsed.currency,
-      accepting_orders: parsed.acceptingOrders,
-      in_store_payment_enabled: parsed.inStorePaymentEnabled,
-      min_order_cents: parsed.minOrderCents,
-      demand_threshold_orders: parsed.demandThresholdOrders,
-      demand_multiplier: parsed.demandMultiplier,
-      auto_start_orders: parsed.autoStartOrders,
-      auto_ready_orders: parsed.autoReadyOrders,
       latitude: hasCoordinates ? parsed.latitude : null,
       longitude: hasCoordinates ? parsed.longitude : null,
       instagram_handle: parsed.instagramHandle,
@@ -201,6 +203,37 @@ export async function updateStoreSettings(storeId: number, input: StoreSettingsI
       rappi_url: parsed.rappiUrl,
       pedidos_ya_url: parsed.pedidosYaUrl,
       uber_eats_url: parsed.uberEatsUrl,
+    })
+    .eq('id', storeId)
+
+  if (error) throw new Error(`No se pudo actualizar la tienda: ${error.message}`)
+}
+
+/**
+ * `/admin/ajustes/pedidos` (Pedidos y envío). Solo sus 14 columnas — mismo
+ * motivo que `updateStoreProfile`.
+ *
+ * `accepting_orders` NO se escribe acá aunque siga viéndose y tocándose en
+ * esta misma página: tiene su propio camino inmediato en las dos direcciones
+ * (`pauseScheduledNightAction` / `resumeAcceptingOrders`, más abajo). Si este
+ * `.update()` la tocara, un submit del resto del formulario con el valor
+ * viejo en el `useForm` — la tarifa de envío, por ejemplo — pisaría en
+ * silencio una pausa o una reapertura hecha desde otra pestaña u otro
+ * dispositivo mientras esta pantalla seguía abierta. Ver
+ * `storeOrderingInputSchema` y 03-review.md, hallazgo bloqueante #1.
+ */
+export async function updateStoreOrdering(storeId: number, input: StoreOrderingInput): Promise<void> {
+  await requireStoreMembership(storeId)
+  const parsed = storeOrderingInputSchema.parse(input)
+  const supabase = await createClient()
+
+  const { error } = await supabase
+    .from('stores')
+    .update({
+      in_store_payment_enabled: parsed.inStorePaymentEnabled,
+      min_order_cents: parsed.minOrderCents,
+      auto_start_orders: parsed.autoStartOrders,
+      auto_ready_orders: parsed.autoReadyOrders,
       delivery_enabled: parsed.deliveryEnabled,
       delivery_fee_cents: parsed.deliveryFeeCents,
       delivery_free_from_cents: parsed.deliveryFreeFromCents,
@@ -209,6 +242,8 @@ export async function updateStoreSettings(storeId: number, input: StoreSettingsI
       delivery_busy_minutes: parsed.deliveryBusyMinutes,
       scheduled_delivery_enabled: parsed.scheduledDeliveryEnabled,
       scheduled_capacity_per_night: parsed.scheduledCapacityPerNight,
+      demand_threshold_orders: parsed.demandThresholdOrders,
+      demand_multiplier: parsed.demandMultiplier,
       // `courier_collects_payment` NO se escribe acá a propósito: ver el
       // comentario en `storeSettingsInputSchema` (store.schema.ts). Ese campo
       // solo lo toca `confirmPendingChangeAction` con `createAdminClient()`
@@ -218,6 +253,35 @@ export async function updateStoreSettings(storeId: number, input: StoreSettingsI
     .eq('id', storeId)
 
   if (error) throw new Error(`No se pudo actualizar la tienda: ${error.message}`)
+}
+
+/**
+ * Reapertura de "Tomando pedidos" (`/admin/ajustes/pedidos`). Es la mitad
+ * simétrica del apagado destructivo: ESE pasa por `cancel_scheduled_orders`
+ * porque tiene que cancelar programados y bajar `accepting_orders` en la misma
+ * transacción (ver `pauseScheduledNightAction`, admin.actions.ts); prender no
+ * cancela nada, así que no hay nada con lo que compartir atomicidad y un
+ * `UPDATE` de una sola columna alcanza.
+ *
+ * Va con el cliente de SESIÓN (RLS), no `createAdminClient()`:
+ * `accepting_orders` tiene grant de columna para `authenticated`
+ * (`20260826120000_hardening.sql`, bloque de grants de `stores`) — a
+ * diferencia de `status`, `slug` o `courier_collects_payment`, que están
+ * afuera a propósito. No es una escritura de plata ni de estado de
+ * plataforma: es la misma columna que el camino de apagado ya deja tocar por
+ * RLS, así que no hace falta el chequeo de permiso explícito que CLAUDE.md
+ * exige para las escrituras con admin client, porque acá no se usa uno.
+ */
+export async function resumeAcceptingOrders(storeId: number): Promise<void> {
+  await requireStoreMembership(storeId)
+  const supabase = await createClient()
+
+  const { error } = await supabase
+    .from('stores')
+    .update({ accepting_orders: true })
+    .eq('id', storeId)
+
+  if (error) throw new Error(`No se pudo reabrir el local: ${error.message}`)
 }
 
 export async function upsertBranding(storeId: number, input: Branding): Promise<void> {
