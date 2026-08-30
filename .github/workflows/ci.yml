@@ -8,10 +8,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Para volver a correr el deploy de migraciones a mano cuando un push a main
+  # falló por algo transitorio, sin tener que empujar un commit vacío.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  # Cancelar la corrida vieja está bien en un PR y es peligroso en main: acá
+  # abajo hay un job que aplica migraciones contra producción, y cancelarlo a
+  # mitad de un `db push` deja la base en un estado que nadie eligió.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Valores dummy, NO secretos reales. Alcanzan para que las validaciones Zod
@@ -104,3 +110,70 @@ jobs:
       - name: Parar el stack
         if: always()
         run: npx supabase stop
+
+  # ---------------------------------------------------------------------------
+  # Hasta hoy las migraciones se aplicaban a mano desde una terminal: alguien se
+  # acordaba de correr `supabase db push` después de mergear, o no. Es el mismo
+  # agujero que A-02 encontró para tsc/eslint/build, un nivel más abajo — y acá
+  # el olvido no rompe un build, rompe el runtime: el código nuevo sale a
+  # producción por Vercel esperando una columna que en la base no existe.
+  # ---------------------------------------------------------------------------
+  deploy-migrations:
+    name: migraciones · aplicar en producción
+    # Solo en main, y solo después de que pasó todo lo demás. `db-types` es la
+    # parte que importa: ya probó que ESTAS migraciones aplican sobre una base
+    # vacía y que database.types.ts coincide. Si eso falla, no hay ninguna razón
+    # para tocar producción.
+    needs: [build, db-types]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    # Los deploys se serializan entre sí y NO se cancelan: dos `db push` en
+    # paralelo compiten por la tabla de historial de migraciones del remoto. El
+    # grupo es distinto del `concurrency` de arriba a propósito.
+    concurrency:
+      group: supabase-migrations-production
+      cancel-in-progress: false
+
+    env:
+      # Personal access token de la cuenta (Supabase → Account → Access Tokens)
+      # y la contraseña de la base del proyecto. Los dos son secretos de repo.
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      # El ref del proyecto NO es un secreto: viaja adentro de
+      # NEXT_PUBLIC_SUPABASE_URL, o sea que ya está en el bundle que descarga
+      # cualquier browser. Va hardcodeado por el mismo motivo que el dominio en
+      # next.config.ts.
+      SUPABASE_PROJECT_ID: xyjracoaufarsnhurhdc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Linkear el proyecto
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+
+      # Deja escrito en el log QUÉ se va a aplicar, antes de aplicarlo. Es lo
+      # único que queda para leer cuando algo se rompe seis horas después.
+      - name: Previsualizar lo pendiente
+        run: supabase db push --dry-run
+
+      # `db push` aplica únicamente las migraciones que no figuran en la tabla
+      # de historial del remoto, así que correrlo sobre una base al día no hace
+      # nada. Lo que NO hace, y no queremos que haga, es tocar la config del
+      # proyecto hosted: eso es `supabase config push`, y acá sería un
+      # desastre — `supabase/config.toml` describe el stack LOCAL, con el
+      # bloque `[auth.email.smtp]` comentado. Pushearlo apagaría el SMTP de
+      # Resend en producción y con él el magic link, que es la única puerta a
+      # /admin. El SMTP del proyecto hosted se configura en el dashboard.
+      - name: Aplicar migraciones pendientes
+        run: supabase db push
+
+      # Verificar en vez de asumir: si local y remoto no quedaron en la misma
+      # versión, se ve en el log de la corrida que lo causó y no tres días
+      # después.
+      - name: Confirmar que local y remoto quedaron iguales
+        run: supabase migration list --linked

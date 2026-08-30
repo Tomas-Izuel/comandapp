@@ -486,6 +486,62 @@ La limpieza no tiene cron propio: es un borrado más dentro de
 
 ---
 
+## Deploy
+
+Vercel despliega la app sola con cada push a `main`. **Las migraciones no se
+aplicaban solas**: alguien se acordaba de correr `supabase db push` después de
+mergear, o no. Es el mismo agujero que la auditoría marcó para tsc/lint/build,
+un nivel más abajo — y el olvido acá no rompe un build, rompe el runtime: el
+código nuevo sale a producción esperando una columna que en la base no existe.
+
+Hoy lo hace el job `deploy-migrations` de `.github/workflows/ci.yml`.
+
+| Cuándo | Qué corre |
+|---|---|
+| Cualquier PR | `typecheck`, `lint`, `test`, `build`, y el stack local con `db reset` + drift de `database.types.ts` |
+| Push a `main` | Todo lo anterior **y**, solo si pasó, `supabase link` + `db push` contra el proyecto hosted |
+
+El `needs: [build, db-types]` no es cosmético: `db-types` ya probó que **esas**
+migraciones aplican sobre una base vacía y que los tipos commiteados coinciden.
+Producción se toca recién después de eso.
+
+Dos secretos en GitHub (Settings → Secrets → Actions):
+
+| Secret | De dónde sale |
+|---|---|
+| `SUPABASE_ACCESS_TOKEN` | Supabase → Account → Access Tokens (es de la cuenta, no del proyecto) |
+| `SUPABASE_DB_PASSWORD` | La contraseña de la base del proyecto (Settings → Database) |
+
+El project ref va **hardcodeado** en el workflow: viaja adentro de
+`NEXT_PUBLIC_SUPABASE_URL`, o sea que ya está en el bundle que descarga
+cualquier browser. Mismo criterio que el dominio en `next.config.ts`.
+
+`cancel-in-progress` quedó condicionado a que el evento sea un PR. Cancelar la
+corrida vieja está bien cuando llega un push nuevo a una rama; en `main`
+cancelaría un `db push` a mitad de camino.
+
+### Lo que el pipeline NO hace, a propósito
+
+- **`supabase config push` no corre, y no tiene que correr.**
+  `supabase/config.toml` describe el stack **local**, con `[auth.email.smtp]`
+  comentado. Pushearlo apagaría el SMTP de Resend en producción y con él el
+  magic link, que es la única puerta a `/admin`. El SMTP del proyecto hosted se
+  configura en el dashboard, igual que el hook `before_user_created`.
+- **No carga los secretos de Vault.** `app_base_url` y `cron_secret` son
+  distintos por entorno y uno es un secreto: cargarlos sigue siendo un paso
+  operativo, una sola vez por proyecto. La migración de pg_cron solo declara
+  cómo se leen.
+- **No ordena la migración respecto del deploy de Vercel.** Los dos arrancan con
+  el mismo push y corren en paralelo, así que hay una ventana en la que uno de
+  los dos ya está y el otro no. Mientras las migraciones sean **aditivas**
+  (agregar columna con default, agregar tabla) da igual quién gane. Para un
+  cambio que rompe —renombrar o borrar una columna que el código vivo todavía
+  lee— va en dos deploys: primero la migración aditiva, después el código, y el
+  borrado en un tercero.
+
+---
+
+
 ## Modelo de datos
 
 21 tablas en `supabase/migrations/`. Convenciones: `bigint identity` como PK,
