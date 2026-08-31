@@ -83,7 +83,7 @@ export default async function OrderTrackingPage(props: PageProps<'/pedido/[token
     <div data-store-theme className={`${themeCls} bg-background text-foreground flex min-h-full flex-1 flex-col`}>
       {/* CSS ya validado por brandingSchema en el modelo */}
       {themeCss ? <style dangerouslySetInnerHTML={{ __html: themeCss }} /> : null}
-      <OrderTracking token={token} initialOrder={order} timezone={store?.timezone} />
+      <OrderTracking token={token} initialOrder={order} timezone={store?.timezone} whatsappPhoneE164={store?.whatsappPhoneE164 ?? null} />
       {/* Adentro del div con `data-store-theme`: así el pie hereda el tema
           del local igual que el resto de esta página, aunque la ruta viva
           afuera de `/[store]`. */}

@@ -66,6 +66,7 @@ export type PriceQuote = { store: Store; priced: PricedCart; eta: EtaEstimate; d
 // Un mail o un WhatsApp que fallan no revierten un pago ni un pedido ya creado.
 // ---------------------------------------------------------------------------
 
+
 /**
  * Arma las variables del mail de comprobante a partir del pedido ya
  * persistido. `paymentPending` es `true` solo para pago al retirar (el
@@ -106,7 +107,14 @@ function toReceiptEmailVars(
   }
 }
 
-async function sendReceiptEmail(
+/**
+ * Exportada (no solo usada acá adentro) porque `confirmTransferPayment`
+ * (`kitchen.controller.ts`) manda el MISMO comprobante cuando el staff
+ * confirma una transferencia — el pedido recién se confirma ahí, no al
+ * crearse. Mismo criterio que `dispatchPaymentSnapshot`: un solo lugar manda
+ * cada mensaje, para que dos copias no se desincronicen con el tiempo.
+ */
+export async function sendReceiptEmail(
   order: Order,
   store: Pick<Store, 'name' | 'slug' | 'address' | 'timezone'>,
   paymentPending: boolean,
@@ -130,7 +138,7 @@ async function sendReceiptEmail(
  * fuera de la página de seguimiento: la plantilla `order_confirmed` existía
  * en el port desde el día uno y nadie la disparaba (P-18).
  */
-async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'name' | 'slug' | 'timezone'>): Promise<void> {
+export async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'name' | 'slug' | 'timezone'>): Promise<void> {
   try {
     await getNotifier().notify({
       storeId: order.storeId,
@@ -291,6 +299,20 @@ export async function submitOrder(input: CreateOrderInput): Promise<SubmitOrderR
   if (order.paymentMethod === 'online') {
     const checkoutUrl = await resolveCheckoutUrl(order, store)
     return { token: order.publicToken, shortCode: order.shortCode, storeSlug: store.slug, redirectUrl: checkoutUrl }
+  }
+
+  if (order.paymentMethod === 'transfer') {
+    // El pedido nace `pending`: no hay preferencia de Mercado Pago que crear
+    // ni plata asegurada todavía. Ni el comprobante por mail ni el WhatsApp de
+    // confirmación salen acá — sería confirmar algo que un humano todavía no
+    // confirmó. Los dos disparan recién cuando el staff toca "Confirmar pago"
+    // (`confirmTransferPayment`, kitchen.controller.ts).
+    return {
+      token: order.publicToken,
+      shortCode: order.shortCode,
+      storeSlug: store.slug,
+      redirectUrl: `/pedido/${order.publicToken}`,
+    }
   }
 
   // Pago al retirar: no hay webhook que confirme el pago después, el pedido

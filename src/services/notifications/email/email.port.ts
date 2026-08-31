@@ -28,7 +28,14 @@ export type EmailVars = {
    * contar.
    */
   scheduledForLabel?: string
-  paymentMethod: 'online' | 'in_store'
+  /**
+   * Los tres medios de cobro, no dos. Ninguna plantilla ramifica por esto hoy
+   * (`paymentPending` es lo que decide si el mail puede parecer un recibo),
+   * pero el tipo tiene que decir la verdad: mapear `transfer` a `'online'`
+   * para que compile guarda un dato falso, y la primera plantilla que lea el
+   * campo lo va a creer.
+   */
+  paymentMethod: 'online' | 'in_store' | 'transfer'
   /** true = "pagás al retirar": el mail NO puede parecer un recibo de algo ya cobrado. */
   paymentPending: boolean
   currency: string

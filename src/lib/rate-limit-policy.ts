@@ -62,4 +62,27 @@ export const RATE_LIMIT_POLICY: Record<RateLimitBucket, { limit: number; windowS
   'payment_change:store': { limit: 3, windowSeconds: 60 * 60 },
   'support:store': { limit: 1, windowSeconds: 2 * 60 },
   'support:store:day': { limit: 10, windowSeconds: 24 * 60 * 60 },
+  // Misma familia y mismo número que `payment_change:store`, porque es el mismo
+  // riesgo: quien escribe la cuenta bancaria redirige lo que el local cobra por
+  // transferencia. Va con `onError: 'deny'` en el call site.
+  'bank_account_change:store': { limit: 3, windowSeconds: 60 * 60 },
+
+  // --- Comprobante de transferencia ---------------------------------------
+  //
+  // `receipt:order` es la ventana que pidió el dueño del producto: un intento de
+  // subida por pedido cada 8 horas. NO es lo que garantiza "un comprobante por
+  // pedido" —eso lo hacen el trigger `enforce_order_rules` y el CAS sobre
+  // `transfer_receipt_uploaded_at`— sino lo que evita que alguien con el token
+  // martille el endpoint con archivos de 5 MB.
+  //
+  // Los dos van FAIL-OPEN, al contrario de los baldes de credenciales de arriba,
+  // y el motivo es la calibración de siempre: protegen storage, no plata. Si
+  // Postgres no responde, negar la subida no protege nada —el pedido ya está
+  // roto sin base— y sí deja a un cliente que ya transfirió sin forma de
+  // demostrarlo.
+  'receipt:order': { limit: 1, windowSeconds: 8 * 60 * 60 },
+  // Más laxo que `lookup:ip` a propósito: el CGNAT móvil argentino hace que
+  // varios clientes reales compartan IP de salida, y acá el falso positivo le
+  // cae a alguien que ya pagó.
+  'receipt:ip': { limit: 20, windowSeconds: 60 * 60 },
 }

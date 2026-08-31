@@ -6,10 +6,12 @@ import { getCurrentUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { decryptSecret, lastFour } from '@/lib/crypto/secrets'
 import { requireStoreMembership, listStoresForCurrentUser } from '@/models/store.model'
+import { getBankAccountForAdmin } from '@/models/store-bank-account.model'
+import { hasBankAccountValidator } from '@/services/bank-validation'
 import { getMaxPrepMinutes } from '@/models/catalog.model'
 import { getStoreHoursData } from '@/models/store-hours.model'
 import { findCourierMembership } from '@/models/courier.model'
-import type { Store, StoreSchedule } from '@/models/types'
+import type { Store, StoreBankAccountAdmin, StoreSchedule } from '@/models/types'
 
 /**
  * Sesión del panel de un local: quién es, qué tienda opera y con qué rol.
@@ -97,6 +99,51 @@ export async function getPaymentConnectionStatus(storeId: number): Promise<Payme
     connectedAt: data?.connected_at ?? null,
     accessTokenPreview: token ? `•••• ${lastFour(token)}` : null,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pagos — Cuenta bancaria (transferencia)
+//
+// `store_bank_accounts` no tiene ninguna policy de SELECT para
+// `authenticated` (T0): la única manera de leer TODAS sus columnas es con el
+// cliente admin. `requireStoreMembership` hace acá el mismo trabajo que hace
+// para Mercado Pago, arriba. (Las acciones que escriben esta cuenta viven en
+// `admin.actions.ts`, detrás de `{ role: 'owner' }` — mismo criterio que las
+// credenciales de MP.)
+// ---------------------------------------------------------------------------
+
+export type BankAccountStatus = {
+  account: StoreBankAccountAdmin | null
+  /** Hay un proveedor de contraste configurado. Con `false` (el estado normal
+   *  hoy — D0/D7), el panel ni muestra el botón de contraste: uno que nunca
+   *  contesta es peor que no tenerlo. */
+  validatorAvailable: boolean
+}
+
+export async function getBankAccountStatus(storeId: number): Promise<BankAccountStatus> {
+  await requireStoreMembership(storeId)
+  const account = await getBankAccountForAdmin(storeId)
+  return { account, validatorAvailable: hasBankAccountValidator() }
+}
+
+/**
+ * El resultado de contrastar EN VIVO mientras el dueño carga el formulario
+ * (`lookupBankHolderAction`, `admin.actions.ts`).
+ *
+ * NO lleva `holderName`, y es deliberado (00-architecture.md §3.5): cuando el
+ * resultado es `mismatch`, la cuenta puede ser de otra persona, y devolverle
+ * ese nombre al browser del dueño sería divulgar el dato personal de un
+ * tercero. El veredicto solo alcanza: "el CUIT de esa cuenta no coincide con
+ * el que cargaste" ya le dice al dueño exactamente lo que tiene que revisar.
+ */
+export type BankHolderProbe = {
+  /** Hubo proveedor Y contestó con algo. */
+  available: boolean
+  match: 'match' | 'mismatch' | 'unavailable'
+  /** Derivado OFFLINE por `bankNameForCbu` — nunca del proveedor. */
+  bankName: string | null
+  /** El CBU que resolvió el proveedor a partir de un alias. `null` si se buscó directo por CBU. */
+  resolvedCbu: string | null
 }
 
 // ---------------------------------------------------------------------------

@@ -14,10 +14,10 @@ import type { Store } from '@/models/types'
  * deciden si se puede empezar a armarlo.
  */
 
-type PaymentFlags = Pick<Store, 'inStorePaymentEnabled' | 'onlinePaymentEnabled'>
+type PaymentFlags = Pick<Store, 'inStorePaymentEnabled' | 'onlinePaymentEnabled' | 'transferPaymentEnabled'>
 
 export function canCollectPayment(store: PaymentFlags): boolean {
-  return store.onlinePaymentEnabled || store.inStorePaymentEnabled
+  return store.onlinePaymentEnabled || store.inStorePaymentEnabled || store.transferPaymentEnabled
 }
 
 /**

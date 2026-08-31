@@ -48,6 +48,7 @@ function storeRowFixture(overrides: Record<string, unknown> = {}) {
     accepting_orders: true,
     in_store_payment_enabled: false,
     online_payment_enabled: false,
+    transfer_payment_enabled: false,
     min_order_cents: 0,
     demand_threshold_orders: 5,
     demand_multiplier: '1.00',
@@ -353,6 +354,78 @@ describe('createOrder — camino feliz: las guardas nuevas no rompen un pedido o
     expect(args.p_order.scheduled_for).toBeNull()
     expect(args.p_order.scheduled_night).toBeNull()
     expect(args.p_order.night_capacity).toBeNull()
+  })
+})
+
+/**
+ * Transferencia bancaria (T2.2): el tercer medio de pago. Dos cosas se juegan
+ * acá y las dos son plata real si se rompen:
+ *   1. El gate nuevo (`store.transferPaymentEnabled`), calcado de los otros
+ *      dos guardas de método.
+ *   2. `initialStatus` pasó de un ternario de dos ramas (`isOnline ? …`) a
+ *      enumerar el ÚNICO método que nace `confirmed` (`in_store`). El caso
+ *      que rompía el ternario viejo es EXACTAMENTE este: con solo
+ *      transferencia habilitada, `isOnline` daba `false` y el pedido nacía
+ *      `confirmed` e IMPAGO — la cocina cocinaba gratis. Si esta prueba
+ *      volviera a fallar, es esa regresión de vuelta.
+ */
+describe('createOrder — transferencia bancaria (tercer medio de pago)', () => {
+  it('paymentMethod:"transfer" con transferPaymentEnabled:false ⇒ DomainError con el texto de interfaz (canCollectPayment ya pasó por otro medio)', async () => {
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ online_payment_enabled: true, transfer_payment_enabled: false }),
+    })
+
+    await expect(createOrder(orderInput({ paymentMethod: 'transfer' }))).rejects.toThrow(
+      'Este local no está aceptando transferencias por ahora',
+    )
+    expect(rpcMock).not.toHaveBeenCalled()
+  })
+
+  it('con SOLO transferencia habilitada (online e in_store apagados), canCollectPayment ya no corta: el pedido se crea', async () => {
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({
+        online_payment_enabled: false,
+        in_store_payment_enabled: false,
+        transfer_payment_enabled: true,
+      }),
+    })
+
+    const { order } = await createOrder(orderInput({ paymentMethod: 'transfer' }))
+    expect(order.id).toBe(555)
+  })
+
+  it('transferencia habilitada ⇒ nace pending/pending, nunca confirmed — el bug que este medio de pago vino a matar', async () => {
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ transfer_payment_enabled: true }),
+    })
+
+    await createOrder(orderInput({ paymentMethod: 'transfer' }))
+
+    const [, args] = rpcMock.mock.calls[0] as [string, { p_order: Record<string, unknown> }]
+    expect(args.p_order.status).toBe('pending')
+    expect(args.p_order.payment_method).toBe('transfer')
+  })
+
+  it('no-regresión: "in_store" sigue naciendo "confirmed" con el nuevo criterio positivo (enumera in_store, no "no es online")', async () => {
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ in_store_payment_enabled: true }),
+    })
+
+    await createOrder(orderInput({ paymentMethod: 'in_store' }))
+
+    const [, args] = rpcMock.mock.calls[0] as [string, { p_order: Record<string, unknown> }]
+    expect(args.p_order.status).toBe('confirmed')
+  })
+
+  it('no-regresión: "online" sigue naciendo "pending"', async () => {
+    currentAdminMock = buildAdminMock({
+      storeRow: storeRowFixture({ online_payment_enabled: true }),
+    })
+
+    await createOrder(orderInput({ paymentMethod: 'online' }))
+
+    const [, args] = rpcMock.mock.calls[0] as [string, { p_order: Record<string, unknown> }]
+    expect(args.p_order.status).toBe('pending')
   })
 })
 

@@ -20,7 +20,15 @@ import type { Json } from '@/lib/supabase/database.types'
  * admin.
  */
 
-export type PendingChangeKind = 'payment_credentials' | 'courier_payment_policy'
+/**
+ * `'bank_account'` (transferencia): a diferencia de `'payment_credentials'`,
+ * el payload de este kind NO va cifrado (`admin.actions.ts`,
+ * `requestBankAccountChangeAction`) — el CBU se publica a los clientes, así
+ * que cifrarlo acá daría una falsa sensación de secreto sin ganar nada. El
+ * código de 6 dígitos sigue guardándose como HMAC, como siempre
+ * (00-architecture.md §5.11).
+ */
+export type PendingChangeKind = 'payment_credentials' | 'courier_payment_policy' | 'bank_account'
 
 /** Diez minutos: alcanza para ir al mail desde el celular y no tanto como para dejar el código dando vueltas. */
 const TTL_MINUTES = 10

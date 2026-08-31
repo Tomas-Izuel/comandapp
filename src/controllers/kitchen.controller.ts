@@ -1,8 +1,16 @@
 import 'server-only'
 
+import { after } from 'next/server'
 import { log } from '@/lib/log'
 import { storeUrl } from '@/lib/urls'
-import { getOrderWithStoreById } from '@/models/order.model'
+import { sendConfirmedWhatsapp, sendReceiptEmail } from '@/controllers/checkout.controller'
+import {
+  getOrderWithStoreById,
+  getTransferReceiptSignedUrl,
+  markPaidByTransfer,
+  refreshFrozenEta,
+  updateOrderStatus,
+} from '@/models/order.model'
 import { getNotifier, type NotificationResult } from '@/services/notifications'
 import { getEmailSender } from '@/services/notifications/email'
 import type { Order, Store } from '@/models/types'
@@ -214,4 +222,73 @@ async function sendReadyEmail(order: Order, store: Store, trackingUrl: string): 
   } catch (err) {
     log.error('kitchen.sendReadyEmail', 'no se pudo mandar el aviso de "listo" por mail', err, { orderId: order.id })
   }
+}
+
+/**
+ * Confirma el pago de una transferencia y avanza el pedido a `confirmed`.
+ *
+ * Orquesta, EN ESTE ORDEN (00-architecture.md §5.5, es el motivo por el que
+ * este caso de uso vive en un controller y no en un modelo que solo reenvía):
+ *
+ *   1. `markPaidByTransfer` — cierra el ciclo del DINERO (payment_status,
+ *      `paid_at`, fila en `payments`). NO exige que exista comprobante: si el
+ *      staff resolvió por WhatsApp, confirma igual (§5.9, decisión del dueño
+ *      del producto, no se re-abre acá).
+ *   2. `updateOrderStatus(orderId, 'confirmed')` — recién ahora el trigger deja
+ *      pasar la transición: con `payment_status` todavía `pending`,
+ *      `enforce_order_rules` la rechazaba (`<> 'in_store'` sin pago aprobado).
+ *   3. `refreshFrozenEta` — el ETA se congeló al crear el pedido, y entre
+ *      crear y confirmar puede haber pasado media hora; nunca tira, un fallo
+ *      acá no puede tumbar una confirmación de pago ya aplicada.
+ *   4. Comprobante y WhatsApp de confirmación, con `after()` para no bloquear
+ *      la respuesta — mismo patrón que `submitOrder` (pago al retirar) y que
+ *      `applyApprovedPayment` (Mercado Pago): las dos funciones se REUSAN de
+ *      `checkout.controller.ts` en vez de copiarse.
+ *
+ * El borrado del archivo del comprobante NO va acá. La retención decidida es
+ * 24 h después de `paid_at` (00-architecture.md §5.8, D5), así que lo hace el
+ * cron de `cleanup`, no esta acción — sería, de cualquier forma, un no-op
+ * tranquilo acá si no hubiera comprobante.
+ */
+export async function confirmTransferPayment(p: {
+  storeId: number
+  orderId: number
+  reference: string | null
+  userId: string
+}): Promise<void> {
+  await markPaidByTransfer({
+    storeId: p.storeId,
+    orderId: p.orderId,
+    reference: p.reference,
+    confirmedBy: p.userId,
+  })
+
+  await updateOrderStatus(p.orderId, 'confirmed')
+
+  await refreshFrozenEta(p.orderId).catch((err) => {
+    log.error('kitchen.confirmTransferPayment', 'no se pudo recalcular el ETA tras confirmar la transferencia', err, {
+      orderId: p.orderId,
+    })
+  })
+
+  const found = await getOrderWithStoreById(p.orderId)
+  // `storeId` viene del browser (la Server Action ya verificó membresía, pero
+  // no que el pedido sea de ESA tienda): se vuelve a comparar acá antes de
+  // mandarle un mensaje a nadie, mismo criterio que `dispatchReadyNotification`.
+  if (found && found.order.storeId === p.storeId) {
+    after(() => sendReceiptEmail(found.order, found.store, false))
+    after(() => sendConfirmedWhatsapp(found.order, found.store))
+  }
+}
+
+/**
+ * El comprobante del pedido, para que el staff lo mire ANTES de confirmar.
+ * `null` si no hay uno (nunca subió, o ya se purgó) — la pantalla tiene que
+ * poder mostrar igual el botón "Confirmar pago": no depende de esto (§5.9).
+ */
+export async function getTransferReceipt(p: {
+  storeId: number
+  orderId: number
+}): Promise<{ url: string; mime: string } | null> {
+  return getTransferReceiptSignedUrl(p.storeId, p.orderId)
 }

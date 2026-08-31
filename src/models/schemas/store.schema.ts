@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isValidAlias, isValidCbu, normalizeAlias, normalizeCbu } from '@/lib/cbu'
 
 /**
  * Contratos de configuración de tienda (panel de admin → "Mi local").
@@ -317,3 +318,72 @@ export const storeHoursOverrideInputSchema = z
   })
 
 export type StoreHoursOverrideInput = z.infer<typeof storeHoursOverrideInputSchema>
+
+// ---------------------------------------------------------------------------
+// Cuenta bancaria para transferencias (`/admin/pagos`)
+//
+// Reemplaza el CBU/CVU/alias vigente cuando se confirma con el código de 6
+// dígitos (`store-pending-change.model.ts`, kind `'bank_account'`). Igual que
+// los horarios de arriba, valida lo MISMO que los CHECK de la migración
+// `2026083____transferencia_bancaria.sql` —duplicado a propósito—: la base es
+// la autoridad final, esto hace que el mensaje se entienda antes de gastar un
+// viaje a Postgres.
+//
+// D3 (00-architecture.md §8, decisión del dueño del producto, 2026-08-31): el
+// dueño puede cargar CUALQUIERA de los tres identificadores — CBU, CVU o
+// alias. CBU y CVU comparten formato de 22 dígitos y la misma columna, así
+// que acá "cbu" cubre los dos. `cbu` y `alias` son los DOS opcionales, y el
+// `.superRefine()` de más abajo exige que venga al menos uno — espejo exacto
+// del CHECK `store_bank_accounts_has_identifier_check`.
+//
+// Consecuencia ACEPTADA A CONCIENCIA por el dueño: una cuenta cargada solo
+// con alias no tiene checksum que validar, así que un error de tipeo no se
+// detecta acá — el local se entera cuando un cliente transfiere a otra
+// cuenta. La UI de `/admin/pagos` (T3) tiene que advertirlo.
+// ---------------------------------------------------------------------------
+
+/** El string vacío se trata como ausente, mismo patrón que `optionalText` de `order.schema.ts`. */
+function optionalIdentifier(normalize: (raw: string) => string, isValid: (v: string) => boolean, message: string) {
+  return z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined
+      const normalized = normalize(v)
+      return normalized === '' ? undefined : normalized
+    })
+    .refine((v) => v === undefined || isValid(v), message)
+}
+
+export const bankAccountInputSchema = z
+  .object({
+    cbu: optionalIdentifier(normalizeCbu, isValidCbu, 'Revisá el CBU o CVU: los dígitos verificadores no dan'),
+    alias: optionalIdentifier(
+      normalizeAlias,
+      isValidAlias,
+      'El alias tiene que tener de 6 a 20 caracteres (letras, números, punto o guion)',
+    ),
+    holderName: z.string().trim().min(2, 'Falta el nombre del titular').max(120),
+    // CUIT/CUIL DECLARADO por el dueño de SU PROPIA cuenta — nunca de un
+    // tercero. Es lo único que permite calcular `holderMatch` por CUIT contra
+    // CUIT en vez de por nombre (00-architecture.md §3.5). Opcional: sin él,
+    // el contraste automático no tiene con qué comparar y resuelve
+    // `'unavailable'`, que es el estado normal de hoy de todos modos.
+    holderTaxId: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined) return undefined
+        const digits = v.replace(/\D/g, '')
+        return digits === '' ? undefined : digits
+      })
+      .refine((v) => v === undefined || /^\d{11}$/.test(v), 'El CUIT/CUIL son 11 dígitos'),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.cbu === undefined && value.alias === undefined) {
+      ctx.addIssue({ code: 'custom', message: 'Cargá un CBU, un CVU o un alias', path: ['cbu'] })
+    }
+  })
+
+export type BankAccountInput = z.infer<typeof bankAccountInputSchema>

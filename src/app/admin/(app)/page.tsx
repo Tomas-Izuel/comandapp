@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { resolveAdminSession, getPaymentConnectionStatus } from '@/controllers/admin.controller'
-import { getActiveOrders } from '@/models/order.model'
+import { getActiveOrders, getPendingTransferOrders } from '@/models/order.model'
 import { getAdminCatalog } from '@/models/catalog.model'
 import { KdsBoard, type OnboardingStatus } from '@/views/admin/kds/board'
 
@@ -12,7 +12,12 @@ export default async function AdminKitchenPage() {
   const session = await resolveAdminSession()
   if (session.status !== 'ok') redirect('/admin/acceso')
 
-  const orders = await getActiveOrders(session.store.id)
+  // Corren en paralelo: son dos lecturas independientes del mismo store, y una
+  // no depende del resultado de la otra.
+  const [orders, transferOrders] = await Promise.all([
+    getActiveOrders(session.store.id),
+    getPendingTransferOrders(session.store.id),
+  ])
 
   // El onboarding solo se calcula cuando hace falta: si ya hay pedidos activos,
   // el local claramente ya vende, y las dos consultas extra son trabajo tirado.
@@ -33,7 +38,9 @@ export default async function AdminKitchenPage() {
       storeId={session.store.id}
       storeName={session.store.name}
       timezone={session.store.timezone}
+      currency={session.store.currency}
       initialOrders={orders}
+      initialTransferOrders={transferOrders}
       onboarding={onboarding}
       autoStartOrders={session.store.autoStartOrders}
       autoReadyOrders={session.store.autoReadyOrders}

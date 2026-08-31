@@ -9,14 +9,16 @@ const CONTACT_EMAIL = 'tomasizuel@gmail.com'
  * Por eso NO se toca sin mirar el código: si cambian las claves de
  * `localStorage` (`src/lib/cart.tsx`, `src/lib/customer.ts`), el proveedor de
  * pago (`src/services/payments/`) o el de email (`src/services/notifications/`),
- * esta página queda mintiendo.
+ * esta página queda mintiendo. La sección del comprobante de transferencia es
+ * el ejemplo directo: los plazos de retención citados ahí tienen que coincidir
+ * con las constantes de `src/app/api/cron/cleanup/route.ts` (T2.7).
  */
 export default function PrivacidadPage() {
   return (
     <article className="flex flex-col gap-8">
       <header className="flex flex-col gap-2">
         <h1 className="display text-foreground text-3xl font-semibold sm:text-4xl">Política de privacidad</h1>
-        <p className="text-muted-foreground text-sm">Última actualización: 28 de agosto de 2026.</p>
+        <p className="text-muted-foreground text-sm">Última actualización: 31 de agosto de 2026.</p>
       </header>
 
       <div className="text-foreground flex flex-col gap-8 text-base leading-relaxed">
@@ -59,6 +61,23 @@ export default function PrivacidadPage() {
           <p>
             El pago lo procesa Mercado Pago. Los datos de tu tarjeta se ingresan ahí, nunca pasan por esta
             plataforma ni se guardan acá.
+          </p>
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <h2 className="text-xl font-semibold">Si pagás por transferencia</h2>
+          <p>
+            Si elegís transferencia bancaria, te mostramos el CBU o alias del local recién en la pantalla de
+            seguimiento de tu pedido — nunca antes de que el pedido exista. Ahí podés subir una foto o un PDF del
+            comprobante, <strong>una sola vez</strong>: si subiste el archivo equivocado, esa misma pantalla te ofrece
+            escribirle al local por WhatsApp para resolverlo.
+          </p>
+          <p>
+            El comprobante se guarda en un almacenamiento privado que solo puede leer el staff de ese local — nunca
+            vos de vuelta, ni otro local de la plataforma. Lo borramos 24 horas después de que el local confirma el
+            pago, o a los 7 días si el pedido se cancela o queda sin confirmar. El registro de que subiste un
+            comprobante (fecha, tamaño y una huella del archivo) queda igual después de ese borrado, aunque la
+            imagen ya no exista.
           </p>
         </section>
 

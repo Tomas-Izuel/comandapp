@@ -135,6 +135,25 @@ export function OrderSteps({
 }
 
 /**
+ * El texto del estado del dinero. Antes era un ternario binario
+ * (`in_store` vs. el resto): con transferencia, "el resto" mostraba el label
+ * genérico de `payment_status` ("Pago pendiente"), que no dice qué tiene que
+ * HACER el cliente. Separado en una función para no anidar un tercer nivel de
+ * ternario adentro del componente.
+ */
+function paymentNoticeText(
+  paymentMethod: PaymentMethod,
+  paymentStatus: PaymentStatus,
+  transferReceiptUploadedAt: string | null,
+): string {
+  if (paymentMethod === 'in_store') return 'Pagás al retirar'
+  if (paymentMethod === 'transfer') {
+    return transferReceiptUploadedAt ? 'Estamos verificando tu transferencia' : 'Transferí para confirmar tu pedido'
+  }
+  return PAYMENT_STATUS_LABELS[paymentStatus]
+}
+
+/**
  * Estado del dinero. Solo se muestra cuando hay algo que decir.
  *
  * `action` es el slot para el botón "Ir a pagar" que el seguimiento cuelga
@@ -144,17 +163,25 @@ export function OrderSteps({
 export function PaymentNotice({
   paymentStatus,
   paymentMethod,
+  transferReceiptUploadedAt = null,
   action,
   className,
 }: {
   paymentStatus: PaymentStatus
   paymentMethod: PaymentMethod
+  /**
+   * Solo cambia algo para `paymentMethod === 'transfer'`: distingue "todavía
+   * no subiste nada" de "ya subiste, lo estamos revisando". El KDS (T5) no
+   * lo pasa — no lo necesita, y el default `null` deja el texto de "transferí
+   * para confirmar" que ya era razonable antes de este campo existir.
+   */
+  transferReceiptUploadedAt?: string | null
   action?: React.ReactNode
   className?: string
 }) {
   if (paymentStatus === 'approved') return null
 
-  const text = paymentMethod === 'in_store' ? 'Pagás al retirar' : PAYMENT_STATUS_LABELS[paymentStatus]
+  const text = paymentNoticeText(paymentMethod, paymentStatus, transferReceiptUploadedAt)
   const isProblem = paymentStatus === 'rejected' || paymentStatus === 'refunded'
 
   return (

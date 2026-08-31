@@ -55,6 +55,7 @@ export function CheckoutForm({
   storeAddress,
   inStorePaymentEnabled,
   onlinePaymentEnabled,
+  transferPaymentEnabled,
   timezone,
   schedule,
   scheduledDeliveryEnabled,
@@ -66,6 +67,7 @@ export function CheckoutForm({
   storeAddress: string | null
   inStorePaymentEnabled: boolean
   onlinePaymentEnabled: boolean
+  transferPaymentEnabled: boolean
   timezone: string
   /** Horarios + excepciones del local — con qué `scheduleSlots()` arma la grilla. */
   schedule: StoreSchedule
@@ -90,10 +92,24 @@ export function CheckoutForm({
   const isPreview = usePreviewMode()
   const basePath = useStoreBasePath()
 
+  // Métodos de pago REALMENTE disponibles, como lista y no como un booleano
+  // binario. El bug que esto reemplaza (`bothPaymentMethodsAvailable = online
+  // && inStore`) mandaba `in_store` con transferencia habilitada y sin las
+  // otras dos: el pedido nacía `confirmed` e IMPAGO y la cocina cocinaba
+  // gratis (00-architecture.md §2.2, ítem 1). Con la lista: cero disponibles
+  // no debería llegar acá (ya lo corta `canTakeOrders` antes del checkout),
+  // uno solo se usa sin radio que mostrar, dos o más arman el `RadioGroup`.
+  // Depende solo de props, así que es una lectura, no un estado.
+  const availablePaymentMethods: PaymentMethod[] = [
+    onlinePaymentEnabled ? 'online' : null,
+    transferPaymentEnabled ? 'transfer' : null,
+    inStorePaymentEnabled ? 'in_store' : null,
+  ].filter((method): method is PaymentMethod => method !== null)
+
   // Con un solo medio de cobro disponible no hay nada que elegir: el estado
   // arranca directo en el único que existe, en vez de en 'online' a secas
   // (que rompía la pantalla si el local solo tiene pago al retirar).
-  const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>(onlinePaymentEnabled ? 'online' : 'in_store')
+  const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>(availablePaymentMethods[0] ?? 'in_store')
   const [customerName, setCustomerName] = React.useState('')
   const [customerPhone, setCustomerPhone] = React.useState('')
   const [customerEmail, setCustomerEmail] = React.useState('')
@@ -176,15 +192,13 @@ export function CheckoutForm({
   const effectiveDeliveryMethod: DeliveryMethod =
     deliveryMethod === 'delivery' && (!delivery || !delivery.enabled || !delivery.available) ? 'pickup' : deliveryMethod
 
-  // Mismo criterio: si algún medio de cobro dejó de estar disponible
-  // mientras estaba elegido, no se lo manda. Con uno solo habilitado no hay
-  // radio que ofrecer, así que el único método disponible gana siempre.
-  const bothPaymentMethodsAvailable = onlinePaymentEnabled && inStorePaymentEnabled
-  const effectivePaymentMethod: PaymentMethod = bothPaymentMethodsAvailable
+  // Mismo criterio que `effectiveDeliveryMethod` de arriba: si el método
+  // elegido dejó de estar en la lista (la cotización se refrescó y la config
+  // de la tienda cambió a mitad de checkout), se usa el primero que sigue
+  // disponible en vez de mandar un método que ya no existe.
+  const effectivePaymentMethod: PaymentMethod = availablePaymentMethods.includes(paymentMethod)
     ? paymentMethod
-    : onlinePaymentEnabled
-      ? 'online'
-      : 'in_store'
+    : (availablePaymentMethods[0] ?? 'in_store')
 
   // El pago en el local convive con delivery: el repartidor cobra en la
   // puerta (`store.delivery.courierCollects`), así que "pagás al retirar" es
@@ -280,6 +294,65 @@ export function CheckoutForm({
   }
 
   const belowMinimum = quote.status === 'ready' && quote.data.priced.subtotalCents < quote.data.store.minOrderCents
+
+  /**
+   * El texto de "Cómo pagás" cuando hay un solo método habilitado (sin radio
+   * que mostrar). Una función en vez de un ternario de tres ramas metido en el
+   * JSX: es la misma información que las opciones del `RadioGroup` de abajo,
+   * solo que sin nada que elegir.
+   */
+  function singleMethodNotice(method: PaymentMethod) {
+    if (method === 'online') {
+      return (
+        <p className="text-muted-foreground flex items-center gap-1.5 px-1 text-sm">
+          <MercadoPago aria-hidden className="h-3.5 w-auto shrink-0" />
+          Pagás online con Mercado Pago en el siguiente paso.
+        </p>
+      )
+    }
+    if (method === 'transfer') {
+      return (
+        <p className="text-muted-foreground px-1 text-sm">
+          Pagás por transferencia bancaria — te mostramos el CBU y el monto exacto en el siguiente paso.
+        </p>
+      )
+    }
+    return (
+      <p className="text-muted-foreground px-1 text-sm">
+        {effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen.' : 'Pagás al retirar en el local.'}
+      </p>
+    )
+  }
+
+  /**
+   * El texto del botón primario. Antes era un ternario binario
+   * (online → "Ir a pagar", cualquier otra cosa → el texto de pago en el
+   * local) que quedaba mal con transferencia: no es "Pagás al retirar", es
+   * "vas a transferir". Separado acá para no anidar un tercer nivel de
+   * ternario adentro del JSX del botón.
+   */
+  function submitButtonLabel(): React.ReactNode {
+    if (isPreview) return 'No disponible en la vista previa'
+    if (submitting) {
+      return (
+        <>
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          Confirmando…
+        </>
+      )
+    }
+    if (effectivePaymentMethod === 'online') return 'Ir a pagar'
+
+    const scheduleSuffix = schedulingActive && scheduledIso ? ` para las ${formatTime(scheduledIso, timezone)}` : ''
+    const paymentSuffix =
+      effectivePaymentMethod === 'transfer'
+        ? 'Pagás por transferencia'
+        : effectiveDeliveryMethod === 'delivery'
+          ? 'Pagás cuando te lo entreguen'
+          : 'Pagás al retirar'
+
+    return `Confirmar pedido${scheduleSuffix} · ${paymentSuffix}`
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -726,36 +799,47 @@ export function CheckoutForm({
         )}
       </Panel>
 
-      {bothPaymentMethodsAvailable ? (
+      {availablePaymentMethods.length > 1 ? (
         <Panel className="flex flex-col gap-3 p-4 sm:p-5">
           <h2 className="text-sm font-semibold">Cómo pagás</h2>
           <RadioGroup value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as PaymentMethod)}>
-            <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
-              <span className="flex items-center gap-2.5">
-                <RadioGroupItem value="online" />
-                Pagar ahora online
-                <MercadoPago aria-hidden className="h-3.5 w-auto shrink-0" />
-              </span>
-              <span className="text-muted-foreground pl-6 text-xs">Con Mercado Pago, antes de que se prepare.</span>
-            </Label>
-            <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
-              <span className="flex items-center gap-2.5">
-                <RadioGroupItem value="in_store" />
-                {inStorePaymentLabel}
-              </span>
-              <span className="text-muted-foreground pl-6 text-xs">{inStorePaymentHint}</span>
-            </Label>
+            {availablePaymentMethods.includes('online') ? (
+              <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
+                <span className="flex items-center gap-2.5">
+                  <RadioGroupItem value="online" />
+                  Pagar ahora online
+                  <MercadoPago aria-hidden className="h-3.5 w-auto shrink-0" />
+                </span>
+                <span className="text-muted-foreground pl-6 text-xs">Con Mercado Pago, antes de que se prepare.</span>
+              </Label>
+            ) : null}
+            {availablePaymentMethods.includes('transfer') ? (
+              <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
+                <span className="flex items-center gap-2.5">
+                  <RadioGroupItem value="transfer" />
+                  Transferencia bancaria
+                </span>
+                {/* El CBU NO se muestra acá (00-architecture.md §4.1/T4.2): mostrarlo
+                    antes de que el pedido exista invita a transferir sin pedido, y
+                    `OrderPublicView.bankAccount` es el único camino habilitado. */}
+                <span className="text-muted-foreground pl-6 text-xs">
+                  Te mostramos el CBU y el monto exacto en la pantalla siguiente.
+                </span>
+              </Label>
+            ) : null}
+            {availablePaymentMethods.includes('in_store') ? (
+              <Label className="border-border has-[[data-state=checked]]:border-primary flex flex-col items-start gap-1 rounded-(--radius-md) border px-3 py-2.5 font-normal transition-colors duration-(--dur-fast)">
+                <span className="flex items-center gap-2.5">
+                  <RadioGroupItem value="in_store" />
+                  {inStorePaymentLabel}
+                </span>
+                <span className="text-muted-foreground pl-6 text-xs">{inStorePaymentHint}</span>
+              </Label>
+            ) : null}
           </RadioGroup>
         </Panel>
-      ) : onlinePaymentEnabled ? (
-        <p className="text-muted-foreground flex items-center gap-1.5 px-1 text-sm">
-          <MercadoPago aria-hidden className="h-3.5 w-auto shrink-0" />
-          Pagás online con Mercado Pago en el siguiente paso.
-        </p>
       ) : (
-        <p className="text-muted-foreground px-1 text-sm">
-          {effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen.' : 'Pagás al retirar en el local.'}
-        </p>
+        singleMethodNotice(availablePaymentMethods[0] ?? 'in_store')
       )}
 
       <Panel className="flex flex-col gap-1.5 p-4 sm:p-5">
@@ -816,18 +900,7 @@ export function CheckoutForm({
             }
             aria-disabled={isPreview}
           >
-            {isPreview ? (
-              'No disponible en la vista previa'
-            ) : submitting ? (
-              <>
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-                Confirmando…
-              </>
-            ) : effectivePaymentMethod === 'online' ? (
-              'Ir a pagar'
-            ) : (
-              `Confirmar pedido${schedulingActive && scheduledIso ? ` para las ${formatTime(scheduledIso, timezone)}` : ''} · ${effectiveDeliveryMethod === 'delivery' ? 'Pagás cuando te lo entreguen' : 'Pagás al retirar'}`
-            )}
+            {submitButtonLabel()}
           </Button>
         </div>
       </ActionBar>

@@ -13,7 +13,11 @@ import { toActionResult } from '@/lib/action-result'
 import { encryptSecret } from '@/lib/crypto/secrets'
 import { consumeRateLimit } from '@/models/rate-limit.model'
 import { RATE_LIMIT_POLICY } from '@/lib/rate-limit-policy'
-import { confirmationCodeSchema, type PendingChangeStarted } from '@/controllers/admin.controller'
+import {
+  confirmationCodeSchema,
+  type BankHolderProbe,
+  type PendingChangeStarted,
+} from '@/controllers/admin.controller'
 import {
   getStoreById,
   requireStoreMembership,
@@ -22,6 +26,13 @@ import {
   resumeAcceptingOrders,
   upsertBranding,
 } from '@/models/store.model'
+import {
+  upsertBankAccount,
+  setBankAccountActive,
+  deleteBankAccount,
+} from '@/models/store-bank-account.model'
+import { bankNameForCbu, normalizeAlias, normalizeCbu } from '@/lib/cbu'
+import { getBankAccountValidator } from '@/services/bank-validation'
 import {
   consumePendingChange,
   createPendingChange,
@@ -41,8 +52,10 @@ import {
   storeHoursWeeklyInputSchema,
   storeProfileInputSchema,
   storeOrderingInputSchema,
+  bankAccountInputSchema,
   type StoreProfileInput,
   type StoreOrderingInput,
+  type BankAccountInput,
 } from '@/models/schemas/store.schema'
 import { getStoreHoursData, setStoreHours, setStoreHoursOverride } from '@/models/store-hours.model'
 import { currentCommercialNight } from '@/lib/store-hours'
@@ -538,6 +551,20 @@ export async function confirmPendingChangeAction(
       return
     }
 
+    if (change.kind === 'bank_account') {
+      await upsertBankAccount(id, {
+        cbu: (change.payload.cbu as string | null | undefined) ?? null,
+        alias: (change.payload.alias as string | null | undefined) ?? null,
+        holderName: String(change.payload.holderName),
+        holderTaxId: (change.payload.holderTaxId as string | null | undefined) ?? null,
+        bankName: (change.payload.bankName as string | null | undefined) ?? null,
+        holderMatch: (change.payload.holderMatch as 'match' | 'mismatch' | 'unavailable' | null | undefined) ?? null,
+        checkedAt: (change.payload.checkedAt as string | null | undefined) ?? null,
+      })
+      revalidatePath('/admin/pagos')
+      return
+    }
+
     // `stores.courier_collects_payment` no se escribe con el cliente RLS aunque
     // el grant lo permita: si pasara por ahí, el formulario de Ajustes podría
     // volver a tocarlo sin código y toda esta confirmación sería decorado.
@@ -595,6 +622,179 @@ export async function resendPendingChangeCodeAction(
       payload: live.payload,
     })
   }, 'admin.resendPendingChangeCode')
+}
+
+// ---------------------------------------------------------------------------
+// Pagos — Cuenta bancaria (transferencia)
+//
+// Mismo mecanismo que Mercado Pago arriba: `requireOwnerForPaymentChange` +
+// `bank_account_change:store` (fail-closed) + código de 6 dígitos. El motivo
+// es el mismo — cambiar el CBU redirige TODA la plata que el local cobra por
+// transferencia — y por eso se reusa el helper genérico en vez de escribir
+// uno nuevo.
+// ---------------------------------------------------------------------------
+
+/**
+ * Contrasta CUIT contra CUIT, nunca nombre contra nombre
+ * (00-architecture.md §3.5). El `BankAccountLookup` completo que devuelve el
+ * proveedor se descarta al salir de esta función: lo único que sobrevive es
+ * el veredicto.
+ *
+ * `'unavailable'` sin que nada haya fallado es el camino normal de hoy: sin
+ * `holderTaxId` cargado, sin CUIT en la respuesta, o sin proveedor
+ * configurado (el adapter manual siempre devuelve `null`).
+ */
+async function resolveHolderMatch(input: {
+  cbu?: string
+  alias?: string
+  holderTaxId?: string
+}): Promise<'match' | 'mismatch' | 'unavailable'> {
+  if (!input.holderTaxId) return 'unavailable'
+
+  const validator = getBankAccountValidator()
+  const lookup = input.cbu
+    ? await validator.lookupByCbu(input.cbu)
+    : input.alias
+      ? await validator.lookupByAlias(input.alias)
+      : null
+
+  if (!lookup?.holderTaxId) return 'unavailable'
+  return lookup.holderTaxId === input.holderTaxId ? 'match' : 'mismatch'
+}
+
+export async function requestBankAccountChangeAction(
+  storeId: number,
+  input: BankAccountInput,
+): Promise<ActionResult<PendingChangeStarted>> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    const { userId, email, store } = await requireOwnerForPaymentChange(id)
+    const parsed = bankAccountInputSchema.parse(input)
+
+    await consumeOrThrow(
+      'bank_account_change:store',
+      String(id),
+      (s) =>
+        `Ya pediste demasiados cambios de cuenta bancaria para este local. Probá de nuevo en ${humanizeRetryAfter(s)}.`,
+      'deny',
+    )
+
+    // El contraste se hace ACÁ, al pedir el cambio, no al confirmarlo
+    // (00-architecture.md §5.3): contrastar recién al confirmar le mostraría
+    // al dueño el resultado diez minutos después de haber tipeado el CBU, ya
+    // tarde para corregir algo.
+    const bankName = parsed.cbu ? bankNameForCbu(parsed.cbu) : null
+    const holderMatch = await resolveHolderMatch(parsed)
+
+    return startPendingChange({
+      storeId: id,
+      userId,
+      email,
+      storeName: store.name,
+      timezone: store.timezone,
+      kind: 'bank_account',
+      // NO se cifra (00-architecture.md §5.11): a diferencia del access token
+      // de Mercado Pago, el CBU se publica a los clientes — cifrarlo acá
+      // daría una falsa sensación de secreto sin ganar nada. El código de 6
+      // dígitos sigue guardándose como HMAC, como siempre.
+      payload: {
+        cbu: parsed.cbu ?? null,
+        alias: parsed.alias ?? null,
+        holderName: parsed.holderName,
+        holderTaxId: parsed.holderTaxId ?? null,
+        bankName,
+        holderMatch,
+        checkedAt: new Date().toISOString(),
+      },
+    })
+  }, 'admin.requestBankAccountChange')
+}
+
+/**
+ * Contraste EN VIVO mientras el dueño carga el formulario, disparado a mano
+ * con un botón (T3) — nunca en cada tecla. Exige ser dueño, igual que el resto
+ * de esta sección: es la misma superficie que después va a pedir el código.
+ *
+ * `probe` suma `holderTaxId` a la forma que describe `01-tasks.md` (T1.8):
+ * sin el CUIT que el dueño está tipeando en ese momento no hay con qué
+ * comparar, y calcular `holderMatch` sin eso es imposible — la firma del
+ * documento omite el campo, tratado acá como un vacío editorial y no como una
+ * decisión de diseño (ver el dev log de este slice).
+ */
+const bankHolderProbeInputSchema = z
+  .object({
+    cbu: z.string().transform(normalizeCbu).optional(),
+    alias: z.string().transform(normalizeAlias).optional(),
+    holderTaxId: z
+      .string()
+      .transform((v) => v.replace(/\D/g, ''))
+      .optional(),
+  })
+  .strict()
+  .refine((v) => Boolean(v.cbu) || Boolean(v.alias), { message: 'Falta el CBU, el CVU o el alias a contrastar' })
+
+export async function lookupBankHolderAction(
+  storeId: number,
+  probe: { cbu?: string; alias?: string; holderTaxId?: string },
+): Promise<ActionResult<BankHolderProbe>> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id, { role: 'owner' })
+    const parsed = bankHolderProbeInputSchema.parse(probe)
+
+    const validator = getBankAccountValidator()
+    const lookup = parsed.cbu
+      ? await validator.lookupByCbu(parsed.cbu)
+      : parsed.alias
+        ? await validator.lookupByAlias(parsed.alias)
+        : null
+
+    // Este bloque es el único lugar donde vive `lookup` completo: el nombre
+    // que haya devuelto el proveedor no sale de acá (00-architecture.md §3.5).
+    const match: BankHolderProbe['match'] =
+      parsed.holderTaxId && lookup?.holderTaxId
+        ? lookup.holderTaxId === parsed.holderTaxId
+          ? 'match'
+          : 'mismatch'
+        : 'unavailable'
+
+    // `resolvedCbu` solo cuando se buscó por alias: si el dueño ya escribió el
+    // CBU, no hay nada que "resolver" (01-tasks.md, T1.8).
+    const resolvedCbu = !parsed.cbu && parsed.alias ? (lookup?.cbu ?? null) : null
+    const cbuForBankName = parsed.cbu ?? resolvedCbu
+
+    return {
+      available: lookup !== null,
+      match,
+      bankName: cbuForBankName ? bankNameForCbu(cbuForBankName) : null,
+      resolvedCbu,
+    }
+  }, 'admin.lookupBankHolder')
+}
+
+/**
+ * Apagar/prender y borrar NO piden código (00-architecture.md §5.11): el
+ * código protege el DESTINO de la plata, no la disponibilidad del método —
+ * apagar o borrar no redirige nada, así que exigir un segundo factor acá solo
+ * demoraría una decisión que el dueño tiene derecho a tomar rápido.
+ */
+export async function setBankAccountActiveAction(storeId: number, isActive: boolean): Promise<ActionResult> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id, { role: 'owner' })
+    const value = z.boolean().parse(isActive)
+    await setBankAccountActive(id, value)
+    revalidatePath('/admin/pagos')
+  }, 'admin.setBankAccountActive')
+}
+
+export async function deleteBankAccountAction(storeId: number): Promise<ActionResult> {
+  return toActionResult(async () => {
+    const id = storeIdSchema.parse(storeId)
+    await requireStoreMembership(id, { role: 'owner' })
+    await deleteBankAccount(id)
+    revalidatePath('/admin/pagos')
+  }, 'admin.deleteBankAccount')
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react'
 import { toast } from 'sonner'
 import { useDraggable } from '@dnd-kit/core'
-import { AlertTriangle, Banknote, Bike, Bot, Loader2, MessageCircle, Undo2, X } from 'lucide-react'
+import { AlertTriangle, Banknote, Bike, Bot, Landmark, Loader2, MessageCircle, Undo2, X } from 'lucide-react'
 import { Panel, StatusPill } from '@/views/shared/surfaces'
 import { PaymentNotice } from '@/views/shared/order-status'
 import { Button } from '@/components/ui/button'
@@ -60,7 +60,8 @@ type StatusChangeResult = ActionResult<{ notification: { actionUrl?: string } | 
  * depender de un tick central del tablero. Con la cantidad de pedidos activos
  * de un local (decenas, no miles) el costo de N intervalos es irrelevante.
  */
-function useElapsedMinutes(iso: string): number {
+/** Exportado: `transfer-tray.tsx` lo reusa para "hace X min" en sus filas. Mismo reloj, mismo criterio de costo. */
+export function useElapsedMinutes(iso: string): number {
   const [elapsed, setElapsed] = useState(() => minutesSince(iso))
   useEffect(() => {
     const id = setInterval(() => setElapsed(minutesSince(iso)), 30_000)
@@ -240,6 +241,19 @@ export function OrderCard({
           <span className="border-border bg-muted text-muted-foreground inline-flex shrink-0 items-center gap-1 rounded-pill border px-2 py-0.5 font-medium">
             <Bike className="size-3" aria-hidden />
             {order.courierName}
+          </span>
+        ) : null}
+        {/*
+          Un pedido por transferencia que llegó acá ya está `confirmed` y
+          `approved` — el trigger no deja llegar uno impago (T4/00-architecture
+          §5.5). Este chip no avisa un problema de pago: avisa de qué medio
+          vino la plata, porque en el mostrador importa saber que NO hay que
+          buscar efectivo ni tarjeta en la caja para este pedido.
+        */}
+        {order.paymentMethod === 'transfer' ? (
+          <span className="border-border bg-muted text-muted-foreground inline-flex shrink-0 items-center gap-1 rounded-pill border px-2 py-0.5 font-medium">
+            <Landmark className="size-3" aria-hidden />
+            Transferencia
           </span>
         ) : null}
       </div>
