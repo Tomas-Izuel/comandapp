@@ -71,6 +71,20 @@ const cfg = config(PHASE_PRODUCTION_BUILD)
 const rewriteEntries = (cfg.rewrites as () => { beforeFiles: RouteEntry[] })().beforeFiles
 const redirectEntries = (cfg.redirects as () => RouteEntry[])()
 
+/**
+ * ¿Está encendido el grupo 1 (apex path-based → subdominio)?
+ *
+ * Se DERIVA de la config real en vez de importar la constante, para que el test
+ * siga midiendo lo que Next va a servir y no lo que un booleano dice.
+ *
+ * Está apagado desde el 2026-08-31 porque el wildcard `*.comandapp.ar` nunca se
+ * emitió (nameservers en DonWeb, no en Vercel) y el 308 mandaba el camino de
+ * compra entero a un host sin registro A. Las aserciones POSITIVAS del grupo 1
+ * se saltean mientras esté apagado; las NEGATIVAS se corren siempre, porque
+ * "esto no redirige" tiene que valer en los dos estados.
+ */
+const apexToSubdomainOn = redirectEntries.some((e) => e.destination.includes(':store.comandapp.ar'))
+
 describe('next.config.ts — rewrites() vive en beforeFiles (criterio 1, la fase importa tanto como la entrada)', () => {
   it('rewrites() devuelve { beforeFiles: [...] }, NO un array plano — beforeFiles es lo único que puede pisar src/app/page.tsx', () => {
     const raw = (cfg.rewrites as () => unknown)()
@@ -133,7 +147,7 @@ describe('next.config.ts — un subdominio de subdominio no es una tienda (crite
 describe('next.config.ts — redirect apex path-based → subdominio, 308 (criterios 7-9, 16-17)', () => {
   const APEX = 'comandapp.ar'
 
-  it('7. apex + "/la-birra/carrito" → 308 a https://la-birra.comandapp.ar/carrito', () => {
+  it.skipIf(!apexToSubdomainOn)('7. apex + "/la-birra/carrito" → 308 a https://la-birra.comandapp.ar/carrito', () => {
     const match = findMatch(redirectEntries, APEX, '/la-birra/carrito')
     expect(match?.entry.permanent).toBe(true)
     expect(match?.hostname).toBe('la-birra.comandapp.ar')
@@ -158,7 +172,7 @@ describe('next.config.ts — redirect apex path-based → subdominio, 308 (crite
   }
 
   for (const p of ['/administracion', '/pedidos-ya', '/legal-cordobes']) {
-    it(`17. la lista de reservados no es "de más": apex + "${p}" (un slug real que solo EMPIEZA como uno reservado) SÍ redirige a su propio subdominio`, () => {
+    it.skipIf(!apexToSubdomainOn)(`17. la lista de reservados no es "de más": apex + "${p}" (un slug real que solo EMPIEZA como uno reservado) SÍ redirige a su propio subdominio`, () => {
       const match = findMatch(redirectEntries, APEX, p)
       expect(match?.entry.permanent).toBe(true)
       expect(match?.hostname).toBe(`${p.slice(1)}.comandapp.ar`)
@@ -242,7 +256,11 @@ describe('next.config.ts — previewFrameHeaders() y el redirect apex→subdomin
         getPathMatch(h.source)(`/${realSlug}`) !== false &&
         matchHas(reqFor('comandapp.ar'), { preview: 'brand' }, h.has ?? [], []) !== false,
     )
-    expect(redirectMatchReal).not.toBeNull()
+    // El carve-out de headers vale siempre; el del redirect, solo con el grupo 1
+    // encendido. Se comparan las dos superficies únicamente cuando las dos
+    // existen — si no, este test pasaría a afirmar que divergieron cuando en
+    // realidad una está apagada a propósito.
+    if (apexToSubdomainOn) expect(redirectMatchReal).not.toBeNull()
     expect(headerMatchReal).toBe(true)
   })
 })
@@ -291,5 +309,40 @@ describe('next.config.ts — cobertura: cada ruta real bajo src/app/[store]/ tie
 describe('next.config.ts — allowedDevOrigins no cambió (criterio 15)', () => {
   it('sigue siendo exactamente la lista de siempre — un cambio acá afecta qué LAN puede hidratar en dev', () => {
     expect(cfg.allowedDevOrigins).toEqual(['127.0.0.1', '192.168.*.*', '10.*.*.*', '172.16.*.*', '*.local'])
+  })
+})
+
+/**
+ * El kill switch del grupo 1, verificado como COMPORTAMIENTO y no como
+ * constante.
+ *
+ * Existe porque el 2026-08-31 este redirect dejó la vitrina de producción
+ * inalcanzable: `comandapp.ar/test-store` respondía 308 a
+ * `test-store.comandapp.ar`, que no tiene registro A porque el wildcard nunca
+ * se emitió (los nameservers siguen en DonWeb, y Vercel necesita controlar el
+ * DNS para emitirlo). Catálogo, carrito y checkout —el camino de compra
+ * entero— rebotaban a un dominio que no resuelve.
+ *
+ * Este bloque es la red que faltaba: los tests de routing cubrían que el
+ * redirect funcionara, y ninguno cubría que el destino EXISTIERA. No podemos
+ * resolver DNS desde un test unitario, así que lo que se fija acá es la
+ * consecuencia: mientras el switch esté apagado, un slug de tienda en el apex
+ * se sirve, no se redirige.
+ *
+ * Cuando el wildcard esté vivo y se prenda el switch, estos dos casos se
+ * saltean solos y vuelven a correr los del criterio 7 y 17.
+ */
+describe('next.config.ts — kill switch del redirect apex→subdominio (2026-08-31)', () => {
+  it.skipIf(apexToSubdomainOn)('con el switch apagado, un slug de tienda en el apex NO redirige: se sirve path-based', () => {
+    expect(findMatch(redirectEntries, 'comandapp.ar', '/test-store')).toBeNull()
+    expect(findMatch(redirectEntries, 'comandapp.ar', '/test-store/checkout')).toBeNull()
+    expect(findMatch(redirectEntries, 'comandapp.ar', '/test-store/carrito')).toBeNull()
+  })
+
+  it('el grupo 2 (tenant → apex) queda encendido en los dos estados: es lo que mantiene los paneles fuera de los subdominios de tienda', () => {
+    for (const p of ['/admin/pedidos', '/backoffice/tiendas', '/repartidor']) {
+      const match = findMatch(redirectEntries, 'la-birra.comandapp.ar', p)
+      expect(match?.hostname, `${p} tiene que volver al apex`).toBe('comandapp.ar')
+    }
   })
 })
