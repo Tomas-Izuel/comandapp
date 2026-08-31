@@ -810,6 +810,72 @@ export type ActionResult<T = void> =
   | { ok: false; error: string; fieldErrors?: Record<string, string[]> }
 
 // ---------------------------------------------------------------------------
+// Padrón de clientes
+//
+// El cliente no tiene cuenta: esto es lo que tipeó al pedir, consolidado por
+// tienda. La identidad es el teléfono normalizado, porque el email es opcional
+// a propósito y el nombre no identifica a nadie.
+//
+// `avgTicketCents` y `daysSinceLastOrder` NO son columnas: los deriva la RPC
+// `store_customer_directory`. Guardarlos sería invitar al drift a cambio de
+// nada.
+// ---------------------------------------------------------------------------
+
+export type StoreCustomer = {
+  id: number
+  storeId: number
+  /** Clave de identidad junto a storeId. Normalizado a E.164. */
+  phoneE164: string
+  displayName: string
+  /** Null cuando el cliente nunca dejó mail. Sin esto, no entra a una campaña. */
+  email: string | null
+  ordersCount: number
+  /** Centavos enteros. Solo plata que el local se quedó por comida que entregó. */
+  totalSpentCents: number
+  /** Derivado: totalSpentCents / ordersCount. Con cero pedidos es 0. */
+  avgTicketCents: number
+  /** Señal operativa (el que reserva y no aparece), no plata. */
+  cancelledOrdersCount: number
+  firstOrderAt: string | null
+  lastOrderAt: string | null
+  /** Derivado. Null cuando nunca compró. Es la señal de churn. */
+  daysSinceLastOrder: number | null
+  /** Baja de promociones. Cuando está, el `mailto:` se desactiva. */
+  marketingOptOutAt: string | null
+  notes: string | null
+}
+
+/**
+ * Lo único que necesita la página pública de `/baja/[token]`: de qué local es
+ * la baja, y si ya estaba dada de baja.
+ *
+ * Es el NOMBRE DEL LOCAL, no el del cliente. La baja es por tienda —el padrón
+ * es por tienda— así que alguien que come en tres locales tiene tres bajas
+ * distintas, y una página que no dice cuál es está pidiendo que el cliente
+ * confirme a ciegas.
+ *
+ * Y no lleva nada más: ni plata, ni historial, ni el nombre del cliente. Lo
+ * único que autoriza esta página es un token que llegó por mail, así que todo
+ * dato de más es algo que se le confirma a quien tenga el link.
+ */
+export type UnsubscribeTarget = {
+  storeName: string
+  alreadyOptedOut: boolean
+}
+
+export type CustomerDirectory = {
+  /** Ordenado por plata gastada, descendente. Es el requisito literal. */
+  customers: StoreCustomer[]
+  totals: {
+    customers: number
+    /** Literal: tiene mail cargado. No descuenta los dados de baja. */
+    withEmail: number
+    /** Sin comprar hace 30 días o más. */
+    inactive30: number
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rate limiting
 //
 // El vocabulario compartido de los baldes. La unión es CERRADA a propósito: un
@@ -862,6 +928,9 @@ export type RateLimitBucket =
   // martille el endpoint.
   | 'receipt:order'
   | 'receipt:ip'
+  // `/baja/[token]` es público y recibe tokens, o sea superficie de sondeo.
+  // Laxo por el CGNAT móvil, mismo criterio que `receipt:ip`.
+  | 'unsubscribe:ip'
 
 export type RateLimitDecision = {
   allowed: boolean

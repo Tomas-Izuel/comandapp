@@ -7,6 +7,7 @@ import {
   ClipboardList,
   UtensilsCrossed,
   BarChart3,
+  Users,
   Palette,
   CreditCard,
   Settings,
@@ -19,10 +20,10 @@ import { signOutAction } from '@/controllers/admin.actions'
 import type { StoreStatus } from '@/models/types'
 
 /**
- * Nav del panel: siete secciones, siempre en el mismo lugar.
+ * Nav del panel: nueve secciones, siempre en el mismo lugar.
  *
  * La escena primaria ahora es el monitor fijo del mostrador. En ≥lg (1024px)
- * eso se traduce en un rail lateral de `--admin-rail`: las siete secciones
+ * eso se traduce en un rail lateral de `--admin-rail`: las nueve secciones
  * quedan visibles a la vez, sin scroll y sin overflow, en posición constante.
  * 240px son el 12,5% de un monitor de 1920 — comprar ese wayfinding permanente
  * es exactamente el criterio nº1 del brief ("retomar el hilo después de una
@@ -36,6 +37,10 @@ const NAV_ITEMS = [
   { href: '/admin/pedidos', label: 'Pedidos', icon: ClipboardList, ownerOnly: false },
   { href: '/admin/catalogo', label: 'Catálogo', icon: UtensilsCrossed, ownerOnly: false },
   { href: '/admin/dashboard', label: 'Métricas', icon: BarChart3, ownerOnly: false },
+  // El padrón muestra cuánto gastó cada cliente: información de caja, mismo
+  // criterio que Repartidores y Pagos. Va entre Métricas y Apariencia (el
+  // orden del rail es de lo operativo a lo de gestión, y esto es gestión).
+  { href: '/admin/clientes', label: 'Clientes', icon: Users, ownerOnly: true },
   { href: '/admin/apariencia', label: 'Apariencia', icon: Palette, ownerOnly: false },
   // Gestión de repartidores: alta, baja y reenvío de invitación tocan a quién
   // le entra plata y quién queda como responsable de una entrega, así que es
@@ -256,7 +261,7 @@ export function AdminShell({
 
 /**
  * Chasis mínimo para los dos estados sin tienda que mostrar: sin local
- * asignado y error del panel. Sin las siete secciones (ninguna tiene sentido
+ * asignado y error del panel. Sin las nueve secciones (ninguna tiene sentido
  * sin un store resuelto), pero con la misma salida y la misma geometría del
  * resto de `/admin` — nada flota suelto con estilos inventados de una vez.
  */

@@ -85,4 +85,15 @@ export const RATE_LIMIT_POLICY: Record<RateLimitBucket, { limit: number; windowS
   // varios clientes reales compartan IP de salida, y acá el falso positivo le
   // cae a alguien que ya pagó.
   'receipt:ip': { limit: 20, windowSeconds: 60 * 60 },
+
+  // --- Baja de promociones ------------------------------------------------
+  //
+  // `/baja/[token]` es público y recibe tokens, o sea superficie de sondeo: sin
+  // límite, alguien puede caminar el espacio de tokens buscando uno válido.
+  // Laxo igual, y por el mismo motivo que `receipt:ip`: es un link que llega
+  // por mail y se abre desde el celular, así que varios clientes reales
+  // comparten IP de salida. Y el peor caso de dejar pasar uno de más es que
+  // alguien dé de baja a un tercero cuyo token ya conocía — molesto, no grave,
+  // y reversible desde el panel.
+  'unsubscribe:ip': { limit: 30, windowSeconds: 60 * 60 },
 }

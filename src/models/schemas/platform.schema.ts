@@ -32,6 +32,11 @@ export const RESERVED_SLUGS = [
   'robots', 'settings', 'sitemap', 'static', 'status', 'storage', 'support', 'www',
   '_next',
 
+  // Baja de promociones. `/baja/[token]` es ruta de nivel raíz: con path-based
+  // un local con este slug queda inalcanzable, y con subdominios es secuestro
+  // de la ruta que el cliente usa para dejar de recibir mails.
+  'baja',
+
   // Desde acá, la lista dejó de proteger PATHS para proteger HOSTNAMES: con
   // `[slug].comandapp.ar`, cada slug es además un subdominio real de la zona
   // DNS de la plataforma. Si un local toma `mail` y después hace falta
@@ -42,6 +47,12 @@ export const RESERVED_SLUGS = [
   // única puerta a /admin y Resend necesita registros en esta misma zona.
   'mail', 'email', 'smtp', 'imap', 'pop', 'mx', 'webmail', 'autoconfig', 'autodiscover',
   'bounces', 'track', 'link', 'links', 'send',
+
+  // Remitente de campañas y vía comercial. `promos.comandapp.ar` manda las
+  // promociones con reputación aislada de la del magic link, y `ventas@` es por
+  // donde un local pide más cupo de mails. `sales` va por simetría con el par
+  // `support`/`soporte` que ya está.
+  'promos', 'ventas', 'sales',
 
   // DNS y red.
   'ns', 'ns1', 'ns2', 'dns', 'ftp', 'vpn', 'gateway', 'proxy',

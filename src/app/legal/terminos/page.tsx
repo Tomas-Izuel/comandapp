@@ -11,7 +11,7 @@ export default function TerminosPage() {
     <article className="flex flex-col gap-8">
       <header className="flex flex-col gap-2">
         <h1 className="display text-foreground text-3xl font-semibold sm:text-4xl">Términos y condiciones</h1>
-        <p className="text-muted-foreground text-sm">Última actualización: 28 de agosto de 2026.</p>
+        <p className="text-muted-foreground text-sm">Última actualización: 31 de agosto de 2026.</p>
       </header>
 
       <div className="text-foreground flex flex-col gap-8 text-base leading-relaxed">
@@ -37,6 +37,15 @@ export default function TerminosPage() {
           <p>
             Los tiempos de entrega que te mostramos son estimados, no una garantía. Pueden variar según cuánto
             trabajo tenga la cocina en ese momento.
+          </p>
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <h2 className="text-xl font-semibold">Cupones y promociones</h2>
+          <p>
+            Un cupón es una oferta del local que lo emite, no de la plataforma: sus condiciones, su vencimiento y su
+            tope de usos los define ese local, y puede pausarlo o darlo de baja en cualquier momento. La plataforma
+            no financia el descuento ni garantiza que un cupón siga disponible al momento de usarlo.
           </p>
         </section>
 

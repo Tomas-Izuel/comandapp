@@ -945,6 +945,68 @@ export type Database = {
           },
         ]
       }
+      store_customers: {
+        Row: {
+          cancelled_orders_count: number
+          created_at: string
+          display_name: string
+          email: string | null
+          first_order_at: string | null
+          id: number
+          last_order_at: string | null
+          marketing_opt_out_at: string | null
+          notes: string | null
+          orders_count: number
+          phone_e164: string
+          store_id: number
+          total_spent_cents: number
+          unsubscribe_token: string
+          updated_at: string
+        }
+        Insert: {
+          cancelled_orders_count?: number
+          created_at?: string
+          display_name: string
+          email?: string | null
+          first_order_at?: string | null
+          id?: never
+          last_order_at?: string | null
+          marketing_opt_out_at?: string | null
+          notes?: string | null
+          orders_count?: number
+          phone_e164: string
+          store_id: number
+          total_spent_cents?: number
+          unsubscribe_token?: string
+          updated_at?: string
+        }
+        Update: {
+          cancelled_orders_count?: number
+          created_at?: string
+          display_name?: string
+          email?: string | null
+          first_order_at?: string | null
+          id?: never
+          last_order_at?: string | null
+          marketing_opt_out_at?: string | null
+          notes?: string | null
+          orders_count?: number
+          phone_e164?: string
+          store_id?: number
+          total_spent_cents?: number
+          unsubscribe_token?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_customers_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       store_hours: {
         Row: {
           created_at: string
@@ -1402,6 +1464,7 @@ export type Database = {
         Returns: Json
       }
       store_couriers: { Args: { p_store_id: number }; Returns: Json }
+      store_customer_directory: { Args: { p_store_id: number }; Returns: Json }
       store_dashboard: {
         Args: { p_days?: number; p_store_id: number }
         Returns: Json
