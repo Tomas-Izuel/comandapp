@@ -114,6 +114,37 @@ function isInvalidSandboxPayment(liveMode: boolean | undefined): boolean {
   return process.env.NODE_ENV === 'production' && liveMode === false
 }
 
+/**
+ * MP rechaza la preferencia con `auto_return invalid. back_url.success must
+ * be defined` cuando la back_url de éxito NO es una URL pública alcanzable
+ * (el caso típico es `http://localhost:3000` en desarrollo) — pese a que el
+ * campo está definido. Si alguien lee este mensaje dentro de seis meses va a
+ * buscar un `back_urls.success` faltante y no lo va a encontrar: el error de
+ * MP nombra el síntoma equivocado.
+ *
+ * Se decide sobre la URL concreta, no sobre `NODE_ENV`: el día que
+ * `NEXT_PUBLIC_SITE_URL` en desarrollo apunte a un túnel HTTPS, `auto_return`
+ * tiene que volver a funcionar solo, sin tocar código.
+ */
+function supportsAutoReturn(url: string): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    // Una URL que ni siquiera parsea no puede ser la que rompa el checkout:
+    // se toma el camino seguro (sin auto_return) y que falle donde corresponda.
+    return false
+  }
+
+  if (parsed.protocol !== 'https:') return false
+  if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1') return false
+  // Sin punto en el hostname no hay dominio público que MP pueda resolver
+  // (nombres de host internos, contenedores, `*.local`, etc).
+  if (!parsed.hostname.includes('.')) return false
+
+  return true
+}
+
 function toPaymentSnapshot(response: PaymentLike, fallbackId: string): PaymentSnapshot {
   return {
     providerPaymentId: String(response.id ?? fallbackId),
@@ -193,7 +224,14 @@ export const mercadopagoAdapter: PaymentProvider = {
         // interno, que no dice nada fuera de nuestra base.
         external_reference: orderToken,
         back_urls: { success: trackingUrl, pending: trackingUrl, failure: trackingUrl },
-        auto_return: 'approved',
+        // `auto_return` exige que `back_urls.success` sea pública: en local
+        // (`http://localhost:3000`) MP lo rechaza con un mensaje engañoso que
+        // dice "must be defined" cuando el campo sí está (ver
+        // `supportsAutoReturn`). Se omite la clave entera, nunca se manda
+        // vacía o en `null`: el cliente vuelve del checkout con el botón
+        // "Volver al sitio" de MP en vez de redirigir solo, y en producción
+        // (`https://comandapp.ar`) no cambia nada.
+        ...(supportsAutoReturn(trackingUrl) ? { auto_return: 'approved' as const } : {}),
         // store_id va en la query del webhook para que la ruta sepa con qué
         // credenciales validar la firma antes de tocar la base — el body de
         // la notificación de MP no trae la tienda. Al APEX, a propósito: es
