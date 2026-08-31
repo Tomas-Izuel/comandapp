@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { FileText, Landmark, Loader2, MessageCircle, Receipt } from 'lucide-react'
+import { FileText, Landmark, Loader2, Receipt } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { whatsappHref } from '@/lib/whatsapp'
+import { WhatsApp } from '@/components/ui/whatsapp'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -43,16 +45,16 @@ async function fetchPendingTransfers(storeId: number): Promise<Order[] | null> {
 }
 
 /**
- * Deep link de WhatsApp al cliente, prellenado con el problema. Misma forma
- * exacta que `store-dock.tsx:57` y `whatsapp-link.adapter.ts` — el teléfono ya
- * llega normalizado a E.164 (`phoneSchema`), así que no hay una segunda
- * limpieza que escribir acá.
+ * Mensaje prellenado propio de esta bandeja (pedir el comprobante). La URL en
+ * sí —normalizar el teléfono, armar `wa.me`— sale de `@/lib/whatsapp`, el
+ * módulo nuevo de T6 que unifica lo que antes eran tres `replace(/\D/g, '')`
+ * a mano (acá, `order-card.tsx` y `store-dock.tsx` de la vitrina).
  */
-function whatsappHref(order: Order): string {
+function transferWhatsappHref(order: Order): string {
   const text =
     `Hola ${order.customerName}! Somos del local, por tu pedido ${order.shortCode || `#${order.id}`}. ` +
     `Necesitamos que nos ayudes con el comprobante de la transferencia, ¿nos lo podés reenviar o contarnos qué pasó?`
-  return `https://wa.me/${order.customerPhoneE164.replace(/\D/g, '')}?text=${encodeURIComponent(text)}`
+  return whatsappHref(order.customerPhoneE164, text)
 }
 
 /** Estado del visor de comprobante: qué se sabe y qué se está mostrando, para UNA fila a la vez. */
@@ -198,9 +200,10 @@ function ConfirmDialog({
         </div>
 
         <DialogFooter className="flex-col gap-2 sm:flex-col">
-          <a href={whatsappHref(order)} target="_blank" rel="noreferrer" className="w-full">
+          <a href={transferWhatsappHref(order)} target="_blank" rel="noreferrer" className="w-full">
             <Button type="button" variant="outline" className="h-11 w-full gap-2">
-              <MessageCircle className="size-4" aria-hidden />
+              {/* Ícono real y tamaño reducido: mismo criterio que `order-card.tsx` (ver el comentario ahí). */}
+              <WhatsApp className="size-3.5" aria-hidden />
               Escribirle por WhatsApp
             </Button>
           </a>

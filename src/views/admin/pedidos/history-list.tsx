@@ -2,10 +2,13 @@
 
 import { Fragment, useMemo, useState } from 'react'
 import { Bike } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { WhatsApp } from '@/components/ui/whatsapp'
 import { StatusPill } from '@/views/shared/surfaces'
 import { Price } from '@/views/shared/money'
 import { EmptyState } from '@/views/shared/states'
 import { formatDateTime, todayInZone, zonedDay, zonedDayStart } from '@/lib/dates'
+import { whatsappHref } from '@/lib/whatsapp'
 import { cn } from '@/lib/utils'
 import { ORDER_STATUSES, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS } from '@/models/schemas/order.schema'
 import type { Order, OrderStatus, PaymentStatus } from '@/models/types'
@@ -170,10 +173,10 @@ export function OrderHistoryList({ orders, timezone }: { orders: Order[]; timezo
               leerse en línea recta — exactamente lo que hace que una tabla
               densa se sienta "fea" aunque el contenido sea correcto.
 
-              El reparto (10/13/16/22/13/12/14) sale de medir en el navegador,
-              con Inter real y `tabular-nums`, el string más largo que cada
-              columna puede llegar a mostrar, más el padding real de la celda
-              (`lg:px-4`, 32px):
+              El reparto (10/13/16/14/13/12/14/8) sale de medir en el
+              navegador, con Inter real y `tabular-nums`, el string más largo
+              que cada columna puede llegar a mostrar, más el padding real de
+              la celda (`lg:px-4`, 32px):
 
                 - HORA: "31/12, 20:59" mide ~86px a 15px/400 → ~118px con
                   padding. 13% de 62rem son 129px. Antes tenía 11% y el peor
@@ -184,10 +187,15 @@ export function OrderHistoryList({ orders, timezone }: { orders: Order[]; timezo
                 - TOTAL: "$ 1.234.567" (7 dígitos, el peor caso de un total en
                   pesos) mide ~91px a 16px/600 → ~123px con padding. 14% de
                   62rem son 139px. Antes tenía 9% y cortaba en "$ 18.0…".
-                - PIDIÓ es la única que dona (29% → 22%): ya trunca con elipsis
-                  A PROPÓSITO —es texto libre y largo, y el `title` cubre el
-                  resto—, así que es la única columna donde ceder ancho no
-                  pierde información.
+                - ACCIONES (T6, nueva): un solo botón ícono de 44px
+                  (`size="icon"`) con padding chico (`px-2 lg:px-3`, no
+                  `px-4`) — 8% de 62rem son 79px, de sobra para el botón sin
+                  desbordar la celda. No compite con HORA/TOTAL por el `min-w`:
+                  esos dos siguen siendo los que fijan el piso de 62rem.
+                - PIDIÓ dona por segunda vez para bancarla (22% → 14%): ya
+                  trunca con elipsis A PROPÓSITO —es texto libre y largo, y el
+                  `title` cubre el resto—, así que sigue siendo la única
+                  columna donde ceder ancho no pierde información.
                 - CÓDIGO, CLIENTE, COCINA y PAGO quedan igual (10/16/13/12): no
                   tenían el bug, y COCINA/PAGO son `whitespace-nowrap` SIN
                   `truncate`, o sea que apretarlas desborda en vez de truncar.
@@ -207,10 +215,11 @@ export function OrderHistoryList({ orders, timezone }: { orders: Order[]; timezo
               <col className="w-[10%]" />
               <col className="w-[13%]" />
               <col className="w-[16%]" />
-              <col className="w-[22%]" />
+              <col className="w-[14%]" />
               <col className="w-[13%]" />
               <col className="w-[12%]" />
               <col className="w-[14%]" />
+              <col className="w-[8%]" />
             </colgroup>
             {/* Pegajoso debajo del chrome del panel: con 200 filas el encabezado
                 tiene que seguir visible al bajar, si no cada fila es ambigua
@@ -240,6 +249,12 @@ export function OrderHistoryList({ orders, timezone }: { orders: Order[]; timezo
                 <th scope="col" className="bg-background sticky top-(--admin-header-h) z-10 px-3 py-2.5 text-right font-medium lg:px-4 lg:py-3.5">
                   Total
                 </th>
+                {/* Ícono solo, sin texto visible en la fila: el encabezado
+                    lleva el nombre igual, para lectores de pantalla que
+                    navegan la tabla celda por celda. */}
+                <th scope="col" className="bg-background sticky top-(--admin-header-h) z-10 px-2 py-2.5 font-medium lg:px-3 lg:py-3.5">
+                  <span className="sr-only">Acciones</span>
+                </th>
               </tr>
             </thead>
             {/* `divide-y` marca el límite entre filas sin sumar un borde propio
@@ -248,7 +263,7 @@ export function OrderHistoryList({ orders, timezone }: { orders: Order[]; timezo
               {groups.map((group) => (
                 <Fragment key={group.day}>
                   {/* Divisor de día: `<tr>` con un único `<th scope="colgroup">`
-                      que abarca las 7 columnas — fila real de la tabla, no un
+                      que abarca las 8 columnas — fila real de la tabla, no un
                       `<div>` suelto entre `<tr>`s, así que sigue siendo una
                       sola tabla para lectores de pantalla y para `table-fixed`.
                       No es sticky: el `th` del encabezado de columnas ya ocupa
@@ -257,7 +272,7 @@ export function OrderHistoryList({ orders, timezone }: { orders: Order[]; timezo
                   <tr className="bg-muted/40">
                     <th
                       scope="colgroup"
-                      colSpan={7}
+                      colSpan={8}
                       className="text-foreground px-3 py-1.5 text-left text-xs font-semibold lg:px-4"
                     >
                       {formatDayHeading(group.day, timezone, today, yesterday)}
@@ -317,6 +332,32 @@ export function OrderHistoryList({ orders, timezone }: { orders: Order[]; timezo
                               incl. <Price cents={order.deliveryFeeCents} currency={order.currency} /> envío
                             </span>
                           ) : null}
+                        </td>
+                        {/*
+                          El dueño del producto pidió que WhatsApp esté SIEMPRE
+                          en las dos pantallas de pedidos — acá, el historial,
+                          nunca lo tuvo. Sin padding `px-3/px-4` como el resto
+                          de las celdas: el botón (`size="icon"`, 44px) es el
+                          contenido, no hay texto que necesite ese aire, y con
+                          `px-4` no entraría en el 8% de columna. Sin padding
+                          vertical propio (`py-0`) a propósito: las filas de
+                          esta tabla ya rondan 40-48px de alto por su propio
+                          texto+`py-2.5/lg:py-3`, así que el botón de 44px
+                          entra CASI sin empujar la fila — el piso de 44px del
+                          toque se cumple sin sumarle una fila más alta a las
+                          200 que puede tener este historial.
+                        */}
+                        <td className="px-2 py-0 text-center align-middle lg:px-3">
+                          <Button
+                            asChild
+                            variant="ghost"
+                            size="icon"
+                            aria-label={`Escribirle a ${order.customerName} por WhatsApp`}
+                          >
+                            <a href={whatsappHref(order.customerPhoneE164)} target="_blank" rel="noreferrer">
+                              <WhatsApp className="size-4" aria-hidden />
+                            </a>
+                          </Button>
                         </td>
                       </tr>
                     )

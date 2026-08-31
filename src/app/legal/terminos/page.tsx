@@ -1,6 +1,6 @@
 export const metadata = { title: 'Términos y condiciones' }
 
-const CONTACT_EMAIL = 'tomasizuel@gmail.com'
+const CONTACT_EMAIL = 'hola@comandapp.ar'
 
 /**
  * Server Component estática, sin data fetching. Texto claro sobre lo que el

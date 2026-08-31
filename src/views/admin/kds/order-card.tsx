@@ -3,7 +3,8 @@
 import { useEffect, useState, useTransition } from 'react'
 import { toast } from 'sonner'
 import { useDraggable } from '@dnd-kit/core'
-import { AlertTriangle, Banknote, Bike, Bot, Landmark, Loader2, MessageCircle, Undo2, X } from 'lucide-react'
+import { AlertTriangle, Banknote, Bike, Bot, Landmark, Loader2, Undo2, X } from 'lucide-react'
+import { WhatsApp } from '@/components/ui/whatsapp'
 import { Panel, StatusPill } from '@/views/shared/surfaces'
 import { PaymentNotice } from '@/views/shared/order-status'
 import { Button } from '@/components/ui/button'
@@ -20,6 +21,7 @@ import { cn } from '@/lib/utils'
 import { formatTime, minutesSince } from '@/lib/dates'
 import { isConflict } from '@/lib/conflict'
 import { markPaidInStoreAction } from '@/controllers/kitchen.actions'
+import { whatsappHref } from '@/lib/whatsapp'
 import { ALLOWED_TRANSITIONS } from '@/models/schemas/order.schema'
 import type { ActionResult, Order, OrderStatus } from '@/models/types'
 import { AssignCourier } from './assign-courier'
@@ -210,19 +212,52 @@ export function OrderCard({
         </div>
       ) : null}
 
-      <div className="flex items-start justify-between gap-3 px-4 pt-3.5">
+      <div className="flex items-start justify-between gap-2 px-4 pt-3.5">
         <span className="text-xl leading-none font-bold lg:text-2xl">{order.shortCode || `#${order.id}`}</span>
-        {urgent ? (
-          <span suppressHydrationWarning className="tabular text-destructive shrink-0 text-sm font-bold lg:text-base">
-            hace {elapsed} min
-          </span>
-        ) : (
-          <StatusPill tone="neutral" className="shrink-0">
-            <span suppressHydrationWarning className="tabular lg:text-sm">
+        <div className="flex shrink-0 items-center gap-1">
+          {/*
+            El dueño del producto pidió que este botón esté SIEMPRE, en las
+            dos pantallas de pedidos. Vive en el HEADER —junto a la
+            identidad del pedido— y no como una fila más del stack de
+            acciones de abajo: con el tablero lleno de tarjetas, sumar una
+            fila de 48px de alto a CADA UNA le compite en peso a la acción
+            que de verdad mueve la cocina (el botón de avance), que tiene
+            que seguir siendo el único elemento pesado de la tarjeta. Como
+            ícono de 44px acá arriba, la presencia es constante — incluida
+            la tarjeta bloqueada por pago, donde antes desaparecía del todo
+            porque nunca había pasado por `changeStatus` — sin sumar altura
+            ni pelear con "Marcar como cobrado" ni con el botón de avance.
+
+            El link, por default, sale del teléfono del pedido (siempre hay
+            uno: `customerPhoneE164` no es nullable) y abre un chat en
+            blanco — de ahí que el aria-label diga "Escribirle". Si
+            `changeStatus` ya trajo un `actionUrl` con el mensaje prellenado
+            del último cambio de estado ("tu pedido está listo"...), ESE
+            gana: es más valioso que un chat vacío y el aria-label pasa a
+            "Avisar", porque el ícono solo no distingue cuál de los dos es.
+          */}
+          <Button
+            asChild
+            variant="ghost"
+            size="icon"
+            aria-label={waLink ? `Avisar a ${order.customerName} por WhatsApp` : `Escribirle a ${order.customerName} por WhatsApp`}
+          >
+            <a href={waLink ?? whatsappHref(order.customerPhoneE164)} target="_blank" rel="noreferrer">
+              <WhatsApp className="size-4" aria-hidden />
+            </a>
+          </Button>
+          {urgent ? (
+            <span suppressHydrationWarning className="tabular text-destructive shrink-0 text-sm font-bold lg:text-base">
               hace {elapsed} min
             </span>
-          </StatusPill>
-        )}
+          ) : (
+            <StatusPill tone="neutral" className="shrink-0">
+              <span suppressHydrationWarning className="tabular lg:text-sm">
+                hace {elapsed} min
+              </span>
+            </StatusPill>
+          )}
+        </div>
       </div>
 
       <div className="text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1 px-4 pt-2 text-xs">
@@ -317,14 +352,6 @@ export function OrderCard({
           </>
         ) : (
           <>
-            {waLink ? (
-              <a href={waLink} target="_blank" rel="noreferrer" className="block">
-                <Button variant="outline" className="h-12 w-full gap-2 text-base">
-                  <MessageCircle className="size-4" />
-                  Avisar por WhatsApp
-                </Button>
-              </a>
-            ) : null}
             {unpaidInStore ? (
               <Button onClick={handleMarkPaid} disabled={pending} variant="outline" className="h-11 w-full gap-2">
                 {pending ? <Loader2 className="size-4 animate-spin" /> : <Banknote className="size-4" />}

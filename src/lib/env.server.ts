@@ -97,7 +97,7 @@ const serverSchema = z.object({
    * configurar nada, pero es una variable y no una constante en el código
    * porque el día que soporte lo atienda otra persona no se toca el repo.
    */
-  SUPPORT_EMAIL: z.string().default('tomasizuel@gmail.com'),
+  SUPPORT_EMAIL: z.string().default('hola@comandapp.ar'),
 
   /**
    * "Continuar con Google" del backoffice de plataforma. Opcional: sin esto
