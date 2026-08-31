@@ -321,40 +321,88 @@ function rewrites() {
  * host de una tienda, vuelve al apex en vez de intentar (y fallar) servir
  * `/admin` bajo el rewrite del grupo (a) de arriba.
  */
+/**
+ * **APAGADO desde 2026-08-31, y esto NO es una preferencia de estilo: con el
+ * grupo 1 encendido la vitrina de producción es inalcanzable.**
+ *
+ * El wildcard `*.comandapp.ar` NUNCA se emitió, porque para eso Vercel tiene
+ * que controlar el DNS y los nameservers del dominio siguen en DonWeb
+ * (`ns1/ns2.donweb.com`). Verificado el 2026-08-31: `comandapp.ar/test-store`
+ * respondía 308 a `https://test-store.comandapp.ar`, un host **sin registro
+ * A**. O sea que catálogo, carrito y checkout —el camino de compra entero—
+ * rebotaban a un dominio que no resuelve. `/mis-pedidos` y `/legal/*` seguían
+ * en pie solo porque están excluidos del redirect a propósito.
+ *
+ * El gating por header `Host` que hace inertes estos redirects en `localhost` y
+ * en `*.vercel.app` es correcto y sigue igual — pero justamente por eso el
+ * problema **no se puede ver en local ni en preview**: solo aparece con el
+ * dominio real, o sea en producción y con clientes adentro.
+ *
+ * No se puede prender con una variable de entorno: `next.config.ts` se evalúa
+ * ANTES de que Next cargue los `.env`, así que un `process.env` acá llega
+ * vacío (ver la nota de trampas en CLAUDE.md). Es esta constante o nada.
+ *
+ * **Para volver a prenderlo hacen falta las dos cosas, en este orden:**
+ *   1. Nameservers del dominio apuntando a Vercel, y `*.comandapp.ar` con SSL
+ *      emitido y resolviendo. Comprobalo con `dig +short <slug>.comandapp.ar A`
+ *      antes de tocar esta línea, no después.
+ *   2. Recién entonces `APEX_TO_SUBDOMAIN_REDIRECTS = true`.
+ *
+ * Ojo al volver: estos redirects son **308, o sea permanentes y cacheados por
+ * el browser**. Los clientes que ya recibieron uno van a seguir yendo al
+ * subdominio un rato aunque el redirect esté apagado del lado del servidor.
+ */
+const APEX_TO_SUBDOMAIN_REDIRECTS = false
+
 function redirects() {
   const apexHas = [{ type: 'host' as const, value: APEX_HOST_PATTERN }]
   const noPreview = [{ type: 'query' as const, key: 'preview' }]
   const tenantHas = [{ type: 'host' as const, value: STORE_HOST_PATTERN }]
 
+  // Grupo 1. Se arma igual y se filtra por la constante, en vez de borrarlo:
+  // el día que el DNS esté, prenderlo es una línea y no reconstruir cuatro
+  // reglas con sus dos guardas (el `missing: preview` del iframe de marca y
+  // `NOT_RESERVED_STORE_SEGMENT`), que es donde estaría el error si hubiera
+  // que reescribirlas de memoria.
+  const apexToSubdomain = !APEX_TO_SUBDOMAIN_REDIRECTS
+    ? []
+    : [
+        {
+          source: `/:store(${NOT_RESERVED_STORE_SEGMENT})`,
+          has: apexHas,
+          missing: noPreview,
+          permanent: true,
+          destination: 'https://:store.comandapp.ar',
+        },
+        {
+          source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/carrito`,
+          has: apexHas,
+          missing: noPreview,
+          permanent: true,
+          destination: 'https://:store.comandapp.ar/carrito',
+        },
+        {
+          source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/checkout`,
+          has: apexHas,
+          missing: noPreview,
+          permanent: true,
+          destination: 'https://:store.comandapp.ar/checkout',
+        },
+        {
+          source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/producto/:id`,
+          has: apexHas,
+          missing: noPreview,
+          permanent: true,
+          destination: 'https://:store.comandapp.ar/producto/:id',
+        },
+      ]
+
   return [
-    {
-      source: `/:store(${NOT_RESERVED_STORE_SEGMENT})`,
-      has: apexHas,
-      missing: noPreview,
-      permanent: true,
-      destination: 'https://:store.comandapp.ar',
-    },
-    {
-      source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/carrito`,
-      has: apexHas,
-      missing: noPreview,
-      permanent: true,
-      destination: 'https://:store.comandapp.ar/carrito',
-    },
-    {
-      source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/checkout`,
-      has: apexHas,
-      missing: noPreview,
-      permanent: true,
-      destination: 'https://:store.comandapp.ar/checkout',
-    },
-    {
-      source: `/:store(${NOT_RESERVED_STORE_SEGMENT})/producto/:id`,
-      has: apexHas,
-      missing: noPreview,
-      permanent: true,
-      destination: 'https://:store.comandapp.ar/producto/:id',
-    },
+    ...apexToSubdomain,
+    // Grupo 2 queda ENCENDIDO. Solo dispara con el Host de un subdominio de
+    // tienda, que hoy no resuelve, así que es inerte — y el día que el DNS
+    // exista tiene que estar ahí desde el primer request: es lo que mantiene
+    // los paneles fuera de los subdominios de tienda.
     { source: '/admin/:path*', has: tenantHas, permanent: true, destination: 'https://comandapp.ar/admin/:path*' },
     {
       source: '/backoffice/:path*',
