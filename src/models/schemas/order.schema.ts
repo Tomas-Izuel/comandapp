@@ -99,8 +99,29 @@ export function isUniqueViolationOn(err: { code?: string; message?: string } | n
   return err?.code === '23505' && (err.message ?? '').includes(index)
 }
 
-export const paymentMethodSchema = z.enum(['online', 'in_store'])
+export const paymentMethodSchema = z.enum(['online', 'in_store', 'transfer'])
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>
+
+/**
+ * Tope duro del comprobante, en el servidor. 4 MB y no los 5 del bucket: el
+ * bucket tiene margen de sobra (backstop), pero acá se rechaza ANTES de que
+ * Vercel devuelva su propio `413 FUNCTION_PAYLOAD_TOO_LARGE`, que no dice nada
+ * útil para quien está tratando de subir un comprobante desde el celular.
+ */
+export const MAX_RECEIPT_BYTES = 4 * 1024 * 1024
+
+/**
+ * El MIME que declara este schema es el que SNIFFEÓ el servidor sobre los
+ * bytes reales (magic bytes), nunca el `Content-Type` que manda el browser —
+ * eso es justo lo que pidió el dueño del producto. Este schema valida la forma
+ * ya derivada; el sniff en sí vive en el route handler, que es quien tiene los
+ * bytes.
+ */
+export const receiptUploadSchema = z.object({
+  mime: z.enum(['image/jpeg', 'application/pdf']),
+  sizeBytes: z.number().int().positive().max(MAX_RECEIPT_BYTES, 'El comprobante pesa más de lo permitido'),
+})
+export type ReceiptUploadInput = z.infer<typeof receiptUploadSchema>
 
 /** Cómo recibe el pedido el cliente. `pickup` es el default histórico. */
 export const deliveryMethodSchema = z.enum(['pickup', 'delivery'])

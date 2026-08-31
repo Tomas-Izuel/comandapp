@@ -2,7 +2,7 @@
 version: 1
 slug: "src-views-storefront-order-tracking-tsx"
 primary_target: "src/views/storefront/order-tracking.tsx"
-related_targets: ["src/app/pedido/[token]/page.tsx","src/views/shared/order-status.tsx"]
+related_targets: ["src/app/pedido/[token]/page.tsx","src/views/shared/order-status.tsx","src/views/storefront/transfer-panel.tsx"]
 ---
 
 # Seguimiento de un pedido programado
@@ -74,3 +74,55 @@ elegiste."*
 
 **Primitivas.** Ninguna nueva. Es lógica interna de `EtaHero`, que vive en este
 mismo archivo (no en `views/shared/order-status.tsx`, que no se toca).
+
+---
+
+# El panel de transferencia y el aviso de pago con tres métodos
+
+**Alcance.** `src/views/storefront/order-tracking.tsx` (el bloque de
+`PaymentNotice` y el nuevo `TransferPanel`) y `src/views/shared/order-status.tsx`
+(`PaymentNotice`). Sigue siendo **Operate**: el cliente ya compró, esto es
+"qué está pasando con mi pago", el mismo trabajo que ya hacía esta pantalla
+para pago online.
+
+**Selected direction — dónde va el panel.** `TransferPanel` (nuevo, brief
+propio en `transfer-panel.tsx`) se monta como un `Panel` más de esta página,
+inmediatamente después del bloque de `PaymentNotice` y antes del desglose de
+ítems — es la continuación natural de "así está tu pago" cuando ese pago
+requiere una acción del cliente. Se renderiza con una sola condición:
+`order.paymentMethod === 'transfer' && order.status === 'pending'`. Ese único
+chequeo alcanza para las dos formas de que el panel deba desaparecer: pago ya
+confirmado (`status` pasa a `confirmed` a la vez que `paymentStatus` pasa a
+`approved`, en la misma acción del staff) y pedido cancelado — no hace falta
+mirar `paymentStatus` por separado.
+
+**`PaymentNotice` gana un tercer caso.** Antes: `in_store` vs. el label
+genérico de `payment_status` para cualquier otra cosa (eso cubría "online"
+razonablemente, pero para "transfer" mostraba "Pago pendiente" a secas, que no
+dice qué hacer). Ahora tres ramas explícitas, resueltas por una función
+(`paymentNoticeText`) y no por un ternario anidado en el JSX: `in_store` →
+"Pagás al retirar"; `transfer` → "Transferí para confirmar tu pedido" o
+"Estamos verificando tu transferencia" según si ya subió comprobante
+(`transferReceiptUploadedAt`); cualquier otro → el label de `payment_status`
+de siempre. El nuevo prop `transferReceiptUploadedAt` es opcional con default
+`null`: el KDS (`order-card.tsx`, ajeno a este slice) sigue llamando al
+componente sin pasarlo, y el comportamiento para online/in_store no cambia un
+píxel.
+
+**Por qué el pill y el panel no se pisan.** `PaymentNotice` se queda como el
+resumen de una línea (lo que ya era); `TransferPanel` es la superficie de
+ACCIÓN (CBU, monto, subida). Mostrar los dos no es redundante: uno dice "en qué
+estás", el otro dice "qué tenés que hacer" — la misma separación que ya existe
+en el producto entre cocina y dinero como "dos relojes" que nunca se infieren
+uno del otro.
+
+**Estados que tienen que existir (además de los ya documentados de
+programados).** Transferencia recién creada, sin comprobante — panel completo.
+Transferencia con comprobante ya subido — panel en su tramo terminal, pill
+diciendo "verificando". Transferencia confirmada — ni pill ni panel (ambos
+retornan `null`/no se renderizan). Transferencia cancelada — ídem. Pedido
+online o en el local — cero cambio de comportamiento.
+
+**Motion, targets.** Sin cambios respecto de lo ya documentado — el panel
+nuevo entra ya montado con el resto de la página, sin revelado al hacer
+scroll.

@@ -101,3 +101,60 @@ encajan en la semántica de `CategoryChip` (categorías de carta) ni en
 `schedule-picker.tsx`), **no** se suma a `views/shared/surfaces.tsx` — no hay
 un segundo consumidor hoy. Si en el futuro alguna otra pantalla necesita elegir
 un horario de 15 minutos, ahí se justifica extraer.
+
+---
+
+# Cómo pagás: de dos métodos a tres (transferencia bancaria)
+
+**Alcance.** El bloque "Cómo pagás" de este mismo archivo, y su page
+(`src/app/[store]/checkout/page.tsx`, que ahora pasa `transferPaymentEnabled`).
+Sigue siendo **Operate**: el cliente ya decidió comprar, esto es un paso más
+del formulario.
+
+**El bug que este trabajo mata.** La derivación de método de pago era un
+ternario BINARIO (`bothPaymentMethodsAvailable = online && inStore`; si no,
+"el único que exista es `online` o si no `in_store`"). Con transferencia
+habilitada y sin las otras dos, esa lógica mandaba `in_store` igual: el pedido
+nacía `confirmed` e **impago**, y la cocina cocinaba gratis. La derivación pasa
+a ser sobre una **lista de métodos disponibles** (`availablePaymentMethods`),
+nunca un ternario que asuma que hay como máximo dos: cero disponibles no
+debería llegar acá (ya lo corta `canTakeOrders` antes del checkout), uno solo
+se usa directo sin radio que mostrar, dos o más arman el `RadioGroup` con
+exactamente los que haya — hoy pueden ser hasta tres.
+
+**Selected direction — el radio de tres.** Mismo `Panel`/`RadioGroup`/`Label`
+bordeado que ya usaban "online" e "in_store" — la transferencia se inserta
+entre los dos (pagar antes → transferir antes → pagar después), no al final,
+porque las dos primeras comparten la misma idea ("asegurás el pedido antes de
+que se prepare") y la tercera es la excepción. Su sublínea es deliberadamente
+corta y NO menciona el CBU: *"Te mostramos el CBU y el monto exacto en la
+pantalla siguiente."* — mostrarlo acá, antes de que el pedido exista, invita a
+transferir sin pedido asociado. `OrderPublicView.bankAccount` (poblado recién
+al crear el pedido) es el único camino habilitado para ese dato — ver el brief
+de `transfer-panel.tsx`.
+
+**Con un solo método disponible.** El texto de aviso (sin radio) ahora tiene
+TRES variantes en vez de dos, resueltas por una función (`singleMethodNotice`)
+y no por un ternario de tres ramas metido en el JSX: "online" (con el logo de
+Mercado Pago), "transfer" (mismo copy que la sublínea del radio), "in_store"
+(el texto ya existente, que depende de si es delivery).
+
+**El botón primario.** Mismo problema en miniatura: el label del botón asumía
+"online" → "Ir a pagar", cualquier otra cosa → el texto de pago en el local.
+Con transferencia esa segunda rama mentía ("Pagás al retirar" cuando en
+realidad hay que transferir). Resuelto con una función (`submitButtonLabel`)
+con una rama propia para `transfer`: *"Confirmar pedido · Pagás por
+transferencia"* (más el horario programado, si aplica — mismo patrón que ya
+existía).
+
+**Estados que tienen que existir (además de los ya documentados de horario).**
+Solo transferencia habilitada (el caso que más importa: verificar que el
+pedido creado tenga `paymentMethod: 'transfer'`, nunca `in_store`). Los tres
+métodos habilitados a la vez. Dos de tres, en cualquier combinación. Un método
+que se apaga a mitad de checkout mientras estaba elegido (mismo criterio ya
+usado para `effectiveDeliveryMethod`: se cae al primero que sigue disponible,
+sin esperar un efecto).
+
+**Motion, targets, primitivas.** Sin cambios respecto de lo ya documentado
+arriba — el radio nuevo reusa el mismo `Label`/`RadioGroupItem` bordeado, sin
+un cuarto patrón visual.

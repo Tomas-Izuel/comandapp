@@ -24,6 +24,7 @@ import { fetchActiveOrdersAction, updateOrderStatusAction } from '@/controllers/
 import { ALLOWED_TRANSITIONS, ORDER_STATUS_LABELS, type OrderStatus } from '@/models/schemas/order.schema'
 import { PageFrame } from '@/views/admin/page-frame'
 import { OrderCard } from './order-card'
+import { TransferTray } from './transfer-tray'
 import type { ActionResult, Order } from '@/models/types'
 
 /**
@@ -298,7 +299,9 @@ export function KdsBoard({
   storeId,
   storeName,
   timezone,
+  currency,
   initialOrders,
+  initialTransferOrders,
   onboarding,
   autoStartOrders,
   autoReadyOrders,
@@ -307,7 +310,15 @@ export function KdsBoard({
   storeId: number
   storeName: string
   timezone: string
+  currency: string
   initialOrders: Order[]
+  /**
+   * Pedidos por transferencia todavía `pending`, esperando que el staff los
+   * confirme. Llegan aparte de `initialOrders` porque `getActiveOrders` filtra
+   * por `ACTIVE_STATUSES` y `pending` no está ahí — es justo el agujero que
+   * `TransferTray` viene a tapar (`00-architecture.md` §2.3).
+   */
+  initialTransferOrders: Order[]
   /** `null` cuando el local ya está armado para vender: el vacío es "al día", no onboarding. */
   onboarding: OnboardingStatus | null
   /** El pedido pasa a `preparing` solo, apenas se confirma. Para marcar la tarjeta "la movió el sistema". */
@@ -553,6 +564,7 @@ export function KdsBoard({
 
     return (
       <PageFrame title="Cocina" width="board">
+        <TransferTray storeId={storeId} currency={currency} initialOrders={initialTransferOrders} />
         {missing.length > 0 ? (
           <div className="mx-auto max-w-md py-4">
             <EmptyState
@@ -676,6 +688,8 @@ export function KdsBoard({
         </div>
       }
     >
+      <TransferTray storeId={storeId} currency={currency} initialOrders={initialTransferOrders} />
+
       <DndContext
         sensors={sensors}
         onDragStart={handleDragStart}

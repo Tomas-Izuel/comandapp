@@ -300,7 +300,10 @@ export function lastOrderWarning(data: StoreSchedule, maxPrepMinutes: number, ti
  * pedido que igual entra para el viernes rompe esa confianza.
  */
 export function storefrontGate(
-  store: Pick<Store, 'status' | 'acceptingOrders' | 'inStorePaymentEnabled' | 'onlinePaymentEnabled'>,
+  store: Pick<
+    Store,
+    'status' | 'acceptingOrders' | 'inStorePaymentEnabled' | 'onlinePaymentEnabled' | 'transferPaymentEnabled'
+  >,
   data: StoreSchedule,
   now: Date,
   timeZone: string,

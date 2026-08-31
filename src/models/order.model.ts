@@ -6,8 +6,9 @@ import { deliveryFeeFor, deliveryMinutesFor } from '@/lib/delivery'
 import { DomainError } from '@/lib/errors'
 import { log } from '@/lib/log'
 import { formatCentsCompact, scaleUpInt, sumCents } from '@/lib/money'
-import { productImageUrl } from '@/lib/storage'
+import { ORDER_RECEIPTS_BUCKET, orderReceiptPath, productImageUrl } from '@/lib/storage'
 import { canCollectPayment } from '@/lib/store-availability'
+import { getPublicBankAccount } from '@/models/store-bank-account.model'
 import {
   commercialNightOf,
   isOpenAt,
@@ -157,6 +158,12 @@ function toOrder(row: OrderRow & { courier?: CourierEmbed }, items: OrderItem[])
     createdAt: row.created_at,
     items,
 
+    transferReceiptPath: row.transfer_receipt_path,
+    transferReceiptUploadedAt: row.transfer_receipt_uploaded_at,
+    transferReceiptMime: row.transfer_receipt_mime,
+    transferReceiptSizeBytes: row.transfer_receipt_size,
+    transferReceiptSha256: row.transfer_receipt_sha256,
+
     deliveryMethod: row.delivery_method as DeliveryMethod,
     deliveryFeeCents: row.delivery_fee_cents,
     deliveryAddress: toDeliveryAddress(row),
@@ -228,6 +235,12 @@ function toOrderPublicView(row: OrderWithItemsAndStore): OrderPublicView {
     deliveryFeeCents: row.delivery_fee_cents,
     deliveryAddress: toDeliveryAddress(row),
     scheduledFor: row.scheduled_for,
+    transferReceiptUploadedAt: row.transfer_receipt_uploaded_at,
+    // Se puebla aparte, en `getOrderByToken`: este mapper es sincrónico y
+    // `getPublicBankAccount` no lo es. `null` acá es el default correcto para
+    // cualquier caller que no lo resuelva (p. ej. `getOrdersByTokens`, que
+    // lista pedidos viejos y no necesita reabrir el flujo de pago).
+    bankAccount: null,
     courierFirstName,
     storeName: row.stores?.name ?? '',
     storeSlug: row.stores?.slug ?? '',
@@ -550,6 +563,9 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
   if (parsed.paymentMethod === 'in_store' && !store.inStorePaymentEnabled) {
     throw new DomainError('Esta tienda no acepta pago al retirar')
   }
+  if (parsed.paymentMethod === 'transfer' && !store.transferPaymentEnabled) {
+    throw new DomainError('Este local no está aceptando transferencias por ahora')
+  }
 
   // El cliente manda UN INSTANTE (o nada); todo lo demás —granularidad, lead,
   // horizonte, si cae dentro de horario, la noche comercial— lo deriva el
@@ -678,8 +694,12 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
     etaAt = new Date(Date.now() + eta.etaMinutes * 60_000).toISOString()
   }
 
-  const isOnline = parsed.paymentMethod === 'online'
-  const initialStatus: OrderStatus = isOnline ? 'pending' : 'confirmed'
+  // Enumerando el método BUENO (pago presencial) en vez de los malos, un
+  // cuarto método de pago nace inseguro por omisión y no al revés: es la misma
+  // trampa que `create_order`/`store_couriers`/`platform_stores` documentan
+  // para las columnas enumeradas a mano, acá aplicada al estado inicial. Es el
+  // mismo criterio invertido que el trigger `enforce_order_rules`.
+  const initialStatus: OrderStatus = parsed.paymentMethod === 'in_store' ? 'confirmed' : 'pending'
 
   // `orders_total_is_subtotal_plus_delivery_check` es la red de seguridad: si
   // acá se rompe la suma, el insert rebota con 23514 en vez de guardar un
@@ -801,7 +821,20 @@ export async function getOrderByToken(token: string): Promise<OrderPublicView | 
   }
   if (!data) return null
 
-  return toOrderPublicView(data as unknown as OrderWithItemsAndStore)
+  const row = data as unknown as OrderWithItemsAndStore
+  const view = toOrderPublicView(row)
+
+  // Único camino por el que el CBU llega al cliente: solo para transferencia,
+  // y solo mientras el pedido no esté cancelado (un pedido cancelado ya no
+  // tiene nada que transferir). `bankAccount` puede seguir en `null` si el
+  // dueño desactivó o borró la cuenta después de crear el pedido — el panel
+  // del cliente lo trata como "no hay a dónde transferir", nunca como un CBU
+  // vacío inventado.
+  if (view.paymentMethod === 'transfer' && view.status !== 'cancelled') {
+    view.bankAccount = await getPublicBankAccount(row.store_id)
+  }
+
+  return view
 }
 
 /**
@@ -1171,12 +1204,15 @@ export async function updateOrderStatus(orderId: number, status: OrderStatus): P
     )
   }
 
-  // Regla de negocio, no de estado: la comida no sale sin plata asegurada.
-  // Un pedido online impago no puede entrar a la cocina; el de pago en el local
-  // sí, porque ahí el compromiso de cobro es presencial.
+  // Regla de negocio, no de estado: la comida no sale sin plata asegurada. El
+  // único método que confirma sin pago aprobado es el pago EN EL LOCAL, porque
+  // ahí el cobro es presencial. Enumerar ese único método bueno (en vez de
+  // listar los malos) es lo que hace que un tercer/cuarto medio de pago nazca
+  // seguro por default — espejo exacto del predicado de
+  // `private.enforce_order_rules`.
   if (
     target === 'confirmed' &&
-    current.payment_method === 'online' &&
+    current.payment_method !== 'in_store' &&
     current.payment_status !== 'approved'
   ) {
     throw new DomainError('Este pedido todavía no está pago')
@@ -1642,6 +1678,339 @@ export async function listOrdersForReconciliation(
     preferenceId: row.preference_id,
     totalCents: row.total_cents,
   }))
+}
+
+// ---------------------------------------------------------------------------
+// 7.5 Transferencia bancaria — el pedido lo confirma un HUMANO, no un webhook.
+//     Ver 00-architecture.md §5.5-§5.9: el comprobante es un solo tiro, "marcar
+//     pagado" NO depende de que exista, y la purga de verdad vive en el cron
+//     de cleanup (borrar de Storage no es SQL, así que acá solo se lee y se
+//     nulea la referencia — el borrado del objeto lo orquesta el caller).
+// ---------------------------------------------------------------------------
+
+/**
+ * El staff (cualquier miembro, no solo el dueño — ver `kitchen.actions.ts`)
+ * confirma que la plata entró A SU CUENTA. NO exige que exista comprobante: si
+ * la resolución fue por WhatsApp, se confirma igual (00-architecture.md §5.9,
+ * decisión del dueño del producto, no se re-abre).
+ *
+ * CAS calcado de `markPaidInStore`: `.eq('payment_method','transfer').eq('payment_status','pending')`.
+ * Cero filas ⇒ otro operario ya lo confirmó, o el pedido no es lo que se pensaba ⇒ 409.
+ *
+ * A diferencia de `markPaidInStore`, esto SÍ inserta en `payments`: acá hay
+ * número de operación y es plata que se movió por afuera de la plataforma, así
+ * que merece libro mayor (00-architecture.md §5.6). El índice único
+ * `payments_one_approved_per_order_idx` es la segunda red — el CAS de arriba
+ * ya cierra casi toda la carrera, pero un 23505 acá se traduce a 409 en vez de
+ * a un 500.
+ */
+export async function markPaidByTransfer(p: {
+  storeId: number
+  orderId: number
+  reference: string | null
+  confirmedBy: string
+}): Promise<Order> {
+  const admin = createAdminClient()
+
+  const { data, error } = await admin
+    .from('orders')
+    .update({ payment_status: 'approved', payment_ref: p.reference ?? 'transfer', paid_at: new Date().toISOString() })
+    .eq('id', p.orderId)
+    .eq('store_id', p.storeId)
+    .eq('payment_method', 'transfer')
+    .eq('payment_status', 'pending')
+    .select(ORDER_WITH_ITEMS_SELECT)
+    .maybeSingle()
+
+  if (error) {
+    log.error(CTX, 'no se pudo marcar la transferencia como pagada', error, { storeId: p.storeId, orderId: p.orderId })
+    throw new Error(`No se pudo marcar la transferencia como pagada: ${error.message}`)
+  }
+  if (!data) {
+    throw new DomainError('Este pedido no existe, no es de pago por transferencia, o ya no está pendiente de pago', {
+      status: 409,
+    })
+  }
+
+  const row = data as unknown as OrderWithItems
+  const order = toOrder(row, row.order_items.map(toOrderItem))
+
+  const { error: paymentError } = await admin.from('payments').insert({
+    order_id: p.orderId,
+    store_id: p.storeId,
+    provider: 'transfer',
+    provider_payment_id: `order:${p.orderId}`,
+    status: 'approved' satisfies PaymentRecordStatus,
+    amount_cents: order.totalCents,
+    currency: order.currency,
+    raw: {
+      confirmedBy: p.confirmedBy,
+      reference: p.reference,
+      receiptSha256: order.transferReceiptSha256,
+      receiptSizeBytes: order.transferReceiptSizeBytes,
+      receiptMime: order.transferReceiptMime,
+    } as Json,
+  })
+
+  if (paymentError) {
+    if (isUniqueViolationOn(paymentError, ONE_APPROVED_PAYMENT_INDEX)) {
+      throw new DomainError('Este pedido ya tiene un pago aprobado registrado', { status: 409 })
+    }
+    log.error(CTX, 'no se pudo registrar el pago de la transferencia', paymentError, {
+      storeId: p.storeId,
+      orderId: p.orderId,
+    })
+    throw new Error(`No se pudo registrar el pago: ${paymentError.message}`)
+  }
+
+  return order
+}
+
+/**
+ * Sube el comprobante de un pedido por transferencia. Quien llama esto NO
+ * está logueado: lo único que tiene es el `public_token`, así que todo va con
+ * el cliente admin.
+ *
+ * ORDEN DE OPERACIONES, y el orden importa (00-architecture.md §5.7):
+ *   1. Resolver y validar el pedido (token, método, estado, sin comprobante previo).
+ *   2. Subir el objeto a Storage.
+ *   3. UPDATE con CAS (`transfer_receipt_uploaded_at is null`).
+ *   4. Si el CAS pierde, borrar el objeto recién subido (best-effort) y 409.
+ *
+ * Subir ANTES de escribir la fila, nunca al revés: un objeto huérfano lo barre
+ * el cron de purga sin drama; una fila que dice "ya tiene comprobante" cuando
+ * en realidad es el de otra request no se puede corregir sola.
+ */
+export async function storeTransferReceipt(p: {
+  token: string
+  bytes: Buffer
+  mime: 'image/jpeg' | 'application/pdf'
+  sha256: string
+}): Promise<{ orderId: number; storeId: number }> {
+  const parsedToken = orderTokenSchema.safeParse(p.token)
+  if (!parsedToken.success) throw new DomainError('No encontramos ese pedido', { status: 404 })
+
+  const admin = createAdminClient()
+
+  const { data: orderRow, error: readError } = await admin
+    .from('orders')
+    .select('id, store_id, status, payment_method, payment_status, transfer_receipt_uploaded_at')
+    .eq('public_token', parsedToken.data)
+    .maybeSingle()
+
+  if (readError) {
+    log.error(CTX, 'no se pudo leer el pedido para subir el comprobante', readError)
+    throw new Error(`No se pudo leer el pedido: ${readError.message}`)
+  }
+  if (!orderRow) throw new DomainError('No encontramos ese pedido', { status: 404 })
+  if (orderRow.payment_method !== 'transfer') {
+    throw new DomainError('Este pedido no es de pago por transferencia')
+  }
+  if (isTerminalStatus(orderRow.status as OrderStatus)) {
+    throw new DomainError('Este pedido ya no admite un comprobante')
+  }
+  if (orderRow.payment_status !== 'pending') {
+    throw new DomainError('Este pedido ya no está esperando el pago')
+  }
+  if (orderRow.transfer_receipt_uploaded_at != null) {
+    throw new DomainError(
+      'Este pedido ya tiene un comprobante subido. Si necesitás corregirlo, escribinos por WhatsApp.',
+      { status: 409 },
+    )
+  }
+
+  const orderId = orderRow.id
+  const storeId = orderRow.store_id
+  const path = orderReceiptPath(storeId, orderId)
+
+  const { error: uploadError } = await admin.storage.from(ORDER_RECEIPTS_BUCKET).upload(path, p.bytes, {
+    contentType: p.mime,
+    upsert: false,
+  })
+  if (uploadError) {
+    log.error(CTX, 'no se pudo subir el comprobante', uploadError, { orderId })
+    throw new Error(`No se pudo subir el comprobante: ${uploadError.message}`)
+  }
+
+  const { data: updated, error: updateError } = await admin
+    .from('orders')
+    .update({
+      transfer_receipt_path: path,
+      transfer_receipt_uploaded_at: new Date().toISOString(),
+      transfer_receipt_mime: p.mime,
+      transfer_receipt_size: p.bytes.length,
+      transfer_receipt_sha256: p.sha256,
+    })
+    .eq('id', orderId)
+    .is('transfer_receipt_uploaded_at', null)
+    .select('id')
+
+  if (updateError) {
+    // Esto NO es la carrera del CAS: es Postgres fallando después de que el
+    // objeto ya subió. Se intenta limpiar el objeto huérfano (best-effort,
+    // nunca tapa el error real) y se propaga la falla de verdad.
+    await admin
+      .storage
+      .from(ORDER_RECEIPTS_BUCKET)
+      .remove([path])
+      .catch(() => undefined)
+    log.error(CTX, 'no se pudo registrar el comprobante subido', updateError, { orderId })
+    throw new Error(`No se pudo registrar el comprobante: ${updateError.message}`)
+  }
+
+  if (!updated || updated.length === 0) {
+    // Otra request ganó la carrera entre la validación de arriba y este
+    // update: hay un objeto de más. Se borra (best-effort) y se informa 409.
+    await admin
+      .storage
+      .from(ORDER_RECEIPTS_BUCKET)
+      .remove([path])
+      .catch(() => undefined)
+    throw new DomainError(
+      'Este pedido ya tiene un comprobante subido. Si necesitás corregirlo, escribinos por WhatsApp.',
+      { status: 409 },
+    )
+  }
+
+  return { orderId, storeId }
+}
+
+/**
+ * URL firmada de 5 minutos para que el staff mire el comprobante. `null` si el
+ * pedido no tiene uno (nunca subió, o ya se purgó). El cliente anónimo NUNCA
+ * recibe una URL de estas — la pantalla de seguimiento solo dice "comprobante
+ * recibido".
+ */
+export async function getTransferReceiptSignedUrl(
+  storeId: number,
+  orderId: number,
+): Promise<{ url: string; mime: string } | null> {
+  const admin = createAdminClient()
+  const { data: orderRow, error } = await admin
+    .from('orders')
+    .select('transfer_receipt_path, transfer_receipt_mime')
+    .eq('id', orderId)
+    .eq('store_id', storeId)
+    .maybeSingle()
+
+  if (error) {
+    log.error(CTX, 'no se pudo leer el comprobante del pedido', error, { storeId, orderId })
+    throw new Error(`No se pudo leer el comprobante: ${error.message}`)
+  }
+  if (!orderRow?.transfer_receipt_path) return null
+
+  const { data: signed, error: signError } = await admin.storage
+    .from(ORDER_RECEIPTS_BUCKET)
+    .createSignedUrl(orderRow.transfer_receipt_path, 300)
+
+  if (signError || !signed) {
+    log.error(CTX, 'no se pudo firmar la URL del comprobante', signError ?? undefined, { storeId, orderId })
+    throw new Error(`No se pudo generar el link del comprobante: ${signError?.message ?? 'error desconocido'}`)
+  }
+
+  return { url: signed.signedUrl, mime: orderRow.transfer_receipt_mime ?? 'image/jpeg' }
+}
+
+/**
+ * Pedidos por transferencia esperando una decisión, para la bandeja del KDS.
+ *
+ * Ordenados con los que YA subieron comprobante primero (`transfer_receipt_uploaded_at`
+ * ascendente, nulls al final): son los que esperan que alguien mire la cuenta
+ * y confirme, mientras que los que todavía no subieron nada solo están
+ * esperando al cliente.
+ */
+export async function getPendingTransferOrders(storeId: number): Promise<Order[]> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('orders')
+    .select(ORDER_WITH_ITEMS_SELECT)
+    .eq('store_id', storeId)
+    .eq('payment_method', 'transfer')
+    .eq('payment_status', 'pending')
+    .eq('status', 'pending')
+    .order('transfer_receipt_uploaded_at', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true })
+
+  if (error) {
+    log.error(CTX, 'no se pudieron leer las transferencias pendientes', error, { storeId })
+    throw new Error(`No se pudieron leer las transferencias pendientes: ${error.message}`)
+  }
+  return ((data ?? []) as unknown as OrderWithItems[]).map((row) => toOrder(row, row.order_items.map(toOrderItem)))
+}
+
+/**
+ * Comprobantes que ya cumplieron su retención (00-architecture.md §5.8), para
+ * el cron de `cleanup`. Es lectura pura: la purga de verdad (borrar el objeto
+ * de Storage y RECIÉN DESPUÉS nulear la fila) la orquesta el caller, porque
+ * acá no hay forma de borrar un archivo del backend de objetos con SQL.
+ */
+export async function listPurgeableReceipts(p: {
+  paidHours: number
+  staleDays: number
+}): Promise<{ orderId: number; path: string }[]> {
+  const admin = createAdminClient()
+  const paidCutoff = new Date(Date.now() - p.paidHours * 60 * 60_000).toISOString()
+  const staleCutoff = new Date(Date.now() - p.staleDays * 24 * 60 * 60_000).toISOString()
+
+  const { data, error } = await admin
+    .from('orders')
+    .select('id, transfer_receipt_path, paid_at, transfer_receipt_uploaded_at')
+    .eq('payment_method', 'transfer')
+    .not('transfer_receipt_path', 'is', null)
+    .or(
+      `and(paid_at.not.is.null,paid_at.lte.${paidCutoff}),and(paid_at.is.null,transfer_receipt_uploaded_at.lte.${staleCutoff})`,
+    )
+
+  if (error) {
+    log.error(CTX, 'no se pudieron listar los comprobantes para purgar', error)
+    throw new Error(`No se pudieron listar los comprobantes: ${error.message}`)
+  }
+
+  return (data ?? [])
+    .filter((row): row is typeof row & { transfer_receipt_path: string } => row.transfer_receipt_path != null)
+    .map((row) => ({ orderId: row.id, path: row.transfer_receipt_path }))
+}
+
+/**
+ * Borra objetos del bucket de comprobantes. Devuelve los paths que
+ * EFECTIVAMENTE se borraron — nunca tira: un fallo acá no puede tumbar el
+ * cron entero, el próximo tick reintenta lo que haya quedado.
+ */
+export async function purgeReceiptObjects(paths: string[]): Promise<string[]> {
+  if (paths.length === 0) return []
+  const admin = createAdminClient()
+  const { data, error } = await admin.storage.from(ORDER_RECEIPTS_BUCKET).remove(paths)
+
+  if (error) {
+    log.error(CTX, 'no se pudieron borrar comprobantes del storage', error, { count: paths.length })
+    return []
+  }
+
+  // `remove()` devuelve el `name` de cada objeto que efectivamente borró, y
+  // coincide con el path COMPLETO que mandamos (verificado a mano contra el
+  // bucket real, no asumido de la doc): un path que ya no existía no aparece
+  // acá, así que el filtro es correcto sin lógica extra.
+  return (data ?? []).map((f) => f.name)
+}
+
+/**
+ * Nulea la referencia al archivo YA borrado. Nunca toca
+ * `transfer_receipt_uploaded_at`: es el registro durable de "este pedido ya
+ * usó su oportunidad", y el trigger lo bloquearía igual si se intentara
+ * (`check_violation`) — no hace falta un `if` acá, es una invariante de base.
+ */
+export async function clearReceiptRefs(orderIds: number[]): Promise<void> {
+  if (orderIds.length === 0) return
+  const admin = createAdminClient()
+  const { error } = await admin
+    .from('orders')
+    .update({ transfer_receipt_path: null, transfer_receipt_mime: null })
+    .in('id', orderIds)
+
+  if (error) {
+    log.error(CTX, 'no se pudo limpiar la referencia al comprobante purgado', error, { count: orderIds.length })
+    throw new Error(`No se pudo limpiar la referencia al comprobante: ${error.message}`)
+  }
 }
 
 // ---------------------------------------------------------------------------

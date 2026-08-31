@@ -7,6 +7,7 @@ import { Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { MercadoPago } from '@/components/ui/mercadopago'
 import { OrderSteps, PaymentNotice, STATUS_LABEL } from '@/views/shared/order-status'
+import { TransferPanel } from '@/views/storefront/transfer-panel'
 import { Panel } from '@/views/shared/surfaces'
 import { Price } from '@/views/shared/money'
 import { formatTime, minutesUntil } from '@/lib/dates'
@@ -190,10 +191,13 @@ export function OrderTracking({
   token,
   initialOrder,
   timezone = DEFAULT_TIMEZONE,
+  whatsappPhoneE164 = null,
 }: {
   token: string
   initialOrder: OrderPublicView
   timezone?: string
+  /** El WhatsApp del LOCAL — el escape hatch de `TransferPanel` para "subí cualquier cosa". */
+  whatsappPhoneE164?: string | null
 }) {
   const [order, setOrder] = React.useState(initialOrder)
 
@@ -298,9 +302,18 @@ export function OrderTracking({
         <PaymentNotice
           paymentStatus={order.paymentStatus}
           paymentMethod={order.paymentMethod}
+          transferReceiptUploadedAt={order.transferReceiptUploadedAt}
           action={order.canResumePayment ? <ResumePaymentButton token={token} /> : null}
         />
       </div>
+
+      {/* Solo mientras el pedido sigue `pending`: apenas el staff confirma el
+          pago, `status` pasa a `confirmed` a la vez que `paymentStatus` pasa a
+          `approved`, así que este único chequeo cubre "ya confirmado" y
+          "cancelado" a la vez — no hace falta mirar `paymentStatus` acá. */}
+      {order.paymentMethod === 'transfer' && order.status === 'pending' ? (
+        <TransferPanel order={order} token={token} whatsappPhoneE164={whatsappPhoneE164} onOrderChange={setOrder} />
+      ) : null}
 
       <Panel className="flex flex-col p-5">
         <div className="flex flex-col gap-px">

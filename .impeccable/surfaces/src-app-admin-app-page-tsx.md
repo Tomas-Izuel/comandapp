@@ -49,3 +49,41 @@ fallido.
 credenciales y sin marca cargada. El panel tiene que decir qué falta para poder
 vender, en orden, y llevarlo ahí. Un panel vacío que no explica nada es la razón
 por la que un local vuelve a WhatsApp.
+
+**Bandeja de transferencias (2026-08-31, feature transferencia bancaria).** El
+tablero (`getActiveOrders`) filtra por `ACTIVE_STATUSES`, que NO incluye
+`pending`. Un pedido por transferencia nace y se queda `pending` hasta que un
+humano lo confirma, así que sin una bandeja aparte queda invisible para el
+mostrador — el cliente sube el comprobante y nadie se entera. `TransferTray`
+(`src/views/admin/kds/transfer-tray.tsx`) resuelve exactamente eso: vive ARRIBA
+del tablero de cocina, no es una columna más (un pedido ahí todavía no tiene la
+plata asegurada, así que no puede convivir con las columnas que sí la tienen), y
+desaparece del todo sin transferencias pendientes — el tablero es la pantalla,
+no la bandeja.
+
+- Alimentada por su propio poll de 30 s + canal Realtime sobre `orders`
+  (mismos números y mismo patrón que `board.tsx`; canal separado porque el
+  tablero solo pide `ACTIVE_STATUSES`).
+- Por fila: código, nombre, hace cuánto, monto, y un chip "Con/Sin
+  comprobante" — nunca solo color, siempre ícono + texto.
+- Tocar una fila abre el detalle en un `Dialog` (foco atrapado, Escape cierra,
+  foco vuelve al disparador — Radix lo da gratis). Ahí: el monto exacto a
+  confirmar, el comprobante (imagen inline cargada RECIÉN al tocar "Ver
+  comprobante" — la signed URL dura 5 min y no tiene sentido pedir N por
+  bandeja que se repollea sola cada 30 s — o PDF en pestaña nueva), un campo
+  opcional de número de operación, "Escribirle por WhatsApp" (deep link
+  `wa.me`, mismo patrón que `store-dock.tsx`) y "Confirmar pago".
+- **Copy no negociable**: la pregunta siempre es "¿la plata está en tu
+  cuenta?", nunca "¿el comprobante es válido?". Prohibido cualquier cosa que
+  lea como un veredicto sobre la imagen (sellos de "verificado", checks
+  verdes). No hay forma de autenticar un comprobante en Argentina — ver
+  `00-architecture.md` §3.3 de la carpeta de esta feature.
+- "Confirmar pago" está SIEMPRE habilitado, con o sin comprobante: si el
+  problema se resolvió por WhatsApp, el staff confirma igual. Nunca agregar
+  una guarda de UI que lo bloquee por falta de imagen.
+- Un 409 (otro operario ya confirmó) se trata como información, no como error:
+  la fila desaparece y el toast es de éxito, no de fallo.
+- La tarjeta del tablero (`order-card.tsx`) suma un chip "Transferencia" (sin
+  botón nuevo: un segundo camino a la misma confirmación de pago es cómo se
+  duplica un cobro) para que el mostrador sepa que no hay que buscar efectivo
+  ni tarjeta en la caja para ese pedido.

@@ -61,13 +61,46 @@ describe.skipIf(!dbAvailable)('máquina de estados del pedido — private.enforc
         ...makeOrder({ status: 'pending', paymentMethod: 'online', paymentStatus: 'pending' }),
         `update public.orders set status = 'confirmed' where id = :order_id;`,
       ].join('\n'),
-      /es online y todavia no esta pago/,
+      // El mensaje nombra el método desde 20260831120000_transferencia_bancaria:
+      // el predicado del trigger pasó de `= 'online'` a `<> 'in_store'`, así que
+      // el error tiene que decir CUÁL de los métodos impagos rebotó.
+      /es de pago online y todavia no esta pago/,
     )
   })
 
   it('el mismo pedido, una vez aprobado el pago, SÍ puede pasar a confirmed', () => {
     const out = inTransaction(
       ...makeOrder({ status: 'pending', paymentMethod: 'online', paymentStatus: 'pending' }),
+      `update public.orders set payment_status = 'approved' where id = :order_id;`,
+      `update public.orders set status = 'confirmed' where id = :order_id;`,
+      `select status from public.orders where id = :order_id;`,
+    )
+    expect(out).toBe('confirmed')
+  })
+
+  /**
+   * Transferencia bancaria: el predicado pasó de `= 'online'` a
+   * `<> 'in_store'` (20260831120000_transferencia_bancaria.sql), y ESTE es
+   * el caso que la migración vino a cubrir — antes de este cambio, un
+   * `payment_method = 'transfer'` no estaba enumerado en ningún lado del
+   * trigger viejo y una transferencia impaga podría haber colado por un
+   * costado que nadie pensó. Corre con el mismo `postgres` (= service_role):
+   * el punto es que la versión de TypeScript (`updateOrderStatus`) se puede
+   * saltear pegándole a PostgREST con la sesión del staff, y esta no.
+   */
+  it('un pedido por TRANSFERENCIA con el pago todavía pending no puede pasar a confirmed', () => {
+    expectSqlToFail(
+      [
+        ...makeOrder({ status: 'pending', paymentMethod: 'transfer', paymentStatus: 'pending' }),
+        `update public.orders set status = 'confirmed' where id = :order_id;`,
+      ].join('\n'),
+      /es de pago transfer y todavia no esta pago/,
+    )
+  })
+
+  it('el mismo pedido por transferencia, una vez que payment_status pasa a approved (confirmTransferPayment), SÍ puede confirmarse', () => {
+    const out = inTransaction(
+      ...makeOrder({ status: 'pending', paymentMethod: 'transfer', paymentStatus: 'pending' }),
       `update public.orders set payment_status = 'approved' where id = :order_id;`,
       `update public.orders set status = 'confirmed' where id = :order_id;`,
       `select status from public.orders where id = :order_id;`,

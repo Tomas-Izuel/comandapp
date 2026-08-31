@@ -26,10 +26,20 @@ import StorePaymentSupportEmail from '@/emails/store-payment-support'
  * El aviso y el soporte sí degradan: son informativos, no bloquean nada.
  */
 
-/** Qué se está por cambiar, en palabras del dueño. Un nombre de columna no le dice nada. */
+/**
+ * Qué se está por cambiar, en palabras del dueño. Un nombre de columna no le
+ * dice nada.
+ *
+ * `bank_account` (transferencia, T1 de
+ * `docs/pipelines/2026-08-30-transferencia-bancaria/`) reusa este mismo
+ * mecanismo de código + aviso: cambiar el CBU/CVU/alias redirige toda la
+ * plata que el local cobra por transferencia, mismo riesgo que reemplazar el
+ * access token de Mercado Pago.
+ */
 export const CHANGE_LABELS = {
   payment_credentials: 'la cuenta de Mercado Pago donde recibís los cobros',
   courier_payment_policy: 'si el repartidor cobra en la puerta',
+  bank_account: 'la cuenta bancaria donde recibís las transferencias',
 } as const
 
 function resendClient(): Resend | null {

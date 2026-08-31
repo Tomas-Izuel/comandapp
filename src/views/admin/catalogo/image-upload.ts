@@ -1,39 +1,14 @@
 import { createClient } from '@/lib/supabase/client'
 import { clientEnv } from '@/lib/env.client'
 import { randomUuidV4 } from '@/lib/uuid'
+import { compressImage } from '@/views/shared/image-compress'
 
 const BUCKET = 'product-images'
-const MAX_DIMENSION = 1600
-const JPEG_QUALITY = 0.82
 
 /** Mismo cómputo que `productImageUrl()` en catalog.model.ts, para el preview del browser. */
 export function productImagePublicUrl(imagePath: string | null): string | null {
   if (!imagePath) return null
   return `${clientEnv.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${imagePath}`
-}
-
-/**
- * Redimensiona a un máximo de 1600px de lado y recomprime a JPEG ~82%. Las
- * fotos de celular llegan pesadas (4-8MB de una cámara moderna) y el bucket
- * corta en 5MB — sin esto, la mitad de las fotos del mostrador rebotarían.
- */
-async function compressImage(file: File): Promise<Blob> {
-  const bitmap = await createImageBitmap(file)
-  const scale = Math.min(1, MAX_DIMENSION / Math.max(bitmap.width, bitmap.height))
-  const width = Math.round(bitmap.width * scale)
-  const height = Math.round(bitmap.height * scale)
-
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return file
-
-  ctx.drawImage(bitmap, 0, 0, width, height)
-  bitmap.close()
-
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', JPEG_QUALITY))
-  return blob ?? file
 }
 
 export type UploadProductImageResult = { ok: true; path: string } | { ok: false; error: string }

@@ -326,13 +326,14 @@ describe('lastOrderWarning — Q1: sin "última orden" derivada, se avisa el efe
 describe('storefrontGate — precedencia: suspended > no_payment > paused > closed_by_hours > open', () => {
   function baseStore(overrides: Partial<Store> = {}): Pick<
     Store,
-    'status' | 'acceptingOrders' | 'inStorePaymentEnabled' | 'onlinePaymentEnabled'
+    'status' | 'acceptingOrders' | 'inStorePaymentEnabled' | 'onlinePaymentEnabled' | 'transferPaymentEnabled'
   > {
     return {
       status: 'active',
       acceptingOrders: true,
       inStorePaymentEnabled: true,
       onlinePaymentEnabled: false,
+      transferPaymentEnabled: false,
       ...overrides,
     }
   }
@@ -363,6 +364,16 @@ describe('storefrontGate — precedencia: suspended > no_payment > paused > clos
       BUE,
     )
     expect(gate.kind).toBe('no_payment')
+  })
+
+  it('SIN online ni en el local pero CON transferencia: no es "no_payment" — es exactamente el bug que la transferencia vino a matar', () => {
+    const gate = storefrontGate(
+      baseStore({ inStorePaymentEnabled: false, onlinePaymentEnabled: false, transferPaymentEnabled: true }),
+      FRIDAY_NIGHT,
+      OPEN_NOW,
+      BUE,
+    )
+    expect(gate.kind).toBe('open')
   })
 
   it('con medio de pago pero accepting_orders=false: "paused"', () => {

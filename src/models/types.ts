@@ -83,6 +83,16 @@ export type Store = {
    * que el cliente ya dejó sus datos.
    */
   onlinePaymentEnabled: boolean
+  /**
+   * Derivado: existe una fila activa en `store_bank_accounts` para esta tienda.
+   * Mismo criterio que `onlinePaymentEnabled` — lo mantiene un trigger, nadie
+   * lo escribe a mano, y no tiene `grant update` para `authenticated`.
+   *
+   * `Store` NO gana `bankAccount`: el CBU le llega al cliente por
+   * `OrderPublicView`, cuando el pedido ya existe y eligió transferencia. La
+   * vitrina solo necesita saber si el método se puede ofrecer.
+   */
+  transferPaymentEnabled: boolean
   minOrderCents: number
   demandThresholdOrders: number
   demandMultiplier: number
@@ -129,6 +139,56 @@ export type StoreDelivery = {
    * de TypeScript: `courier_queue` devuelve `collect: null` desde Postgres.
    */
   courierCollects: boolean
+}
+
+/**
+ * La cuenta bancaria del local, en su versión PÚBLICA: lo que el cliente
+ * necesita para transferir y nada más.
+ *
+ * Estos cuatro campos son exactamente las columnas con `grant select` para
+ * `anon` en `store_bank_accounts` (más `store_id`). Si agregás un campo acá sin
+ * agregar el grant, llega `null` en silencio; si agregás el grant sin pensarlo,
+ * publicás un dato que no tenía que salir. Los dos lados se cambian juntos.
+ *
+ * `cbu` es nullable y no es un descuido: el dueño del producto decidió que se
+ * pueda cargar cualquiera de los tres identificadores (CBU, CVU o alias). Un
+ * CHECK en Postgres garantiza que haya al menos uno, así que
+ * `cbu === null` implica `alias !== null`. El costo aceptado a conciencia es que
+ * una cuenta cargada solo con alias no tiene checksum que validar: un error de
+ * tipeo no se detecta y el local se entera cuando un cliente transfiere a otra
+ * cuenta.
+ */
+export type StoreBankAccount = {
+  /** CBU o CVU: 22 dígitos, el mismo campo cubre los dos. */
+  cbu: string | null
+  alias: string | null
+  /** Titular DECLARADO por el dueño. Es lo que el cliente compara en su homebanking. */
+  holderName: string
+  /** Derivado del código de entidad (3 primeros dígitos del CBU). `null` si solo hay alias. */
+  bankName: string | null
+}
+
+/**
+ * La misma cuenta como la ve el panel del local, con lo que nunca sale al borde
+ * público. Se lee con el admin client detrás de `requireStoreMembership`, igual
+ * que `getPaymentConnectionStatus`.
+ */
+export type StoreBankAccountAdmin = StoreBankAccount & {
+  holderTaxId: string | null
+  isActive: boolean
+  /**
+   * Resultado del contraste con el proveedor de validación, si hubo. Es TODO lo
+   * que sobrevive a esa llamada: el nombre del titular que devuelve la API es un
+   * dato personal de un tercero y **no se persiste nunca** — ni en la base, ni
+   * en un log, ni en el payload que llega al browser. El contraste se hace CUIT
+   * contra CUIT y lo único que queda es este veredicto.
+   *
+   * `'unavailable'` es el estado normal hoy: no hay proveedor contratado, así
+   * que el adapter por defecto no contrasta nada. Nunca se muestra al cliente
+   * como un sello de "verificado" — no lo es.
+   */
+  holderMatch: 'match' | 'mismatch' | 'unavailable' | null
+  checkedAt: string | null
 }
 
 /**
@@ -441,6 +501,20 @@ export type Order = {
   createdAt: string
   items: OrderItem[]
 
+  // --- Comprobante de transferencia ------------------------------------
+  //
+  // Solo se poblan cuando `paymentMethod === 'transfer'` y el cliente subió.
+  // `path` se nulea al purgar el archivo; `uploadedAt`, `sizeBytes` y `sha256`
+  // SOBREVIVEN a la purga a propósito: la huella queda, la imagen no. Es lo que
+  // permite contestar "sí, hubo comprobante y era este" después del borrado.
+  /** Path en el bucket privado `order-receipts`. `null` también significa "ya purgado". */
+  transferReceiptPath: string | null
+  /** Inmutable una vez no nula: es la invariante de "un comprobante por pedido". */
+  transferReceiptUploadedAt: string | null
+  transferReceiptMime: string | null
+  transferReceiptSizeBytes: number | null
+  transferReceiptSha256: string | null
+
   // --- Entrega ---------------------------------------------------------
   deliveryMethod: DeliveryMethod
   /** Congelado al crear el pedido. Es inmutable en el trigger: es plata. */
@@ -524,9 +598,20 @@ export type OrderPublicView = Pick<
   | 'deliveryFeeCents'
   | 'deliveryAddress'
   | 'scheduledFor'
+  | 'transferReceiptUploadedAt'
 > & {
   storeName: string
   storeSlug: string
+  /**
+   * A dónde transferir. Se puebla SOLO cuando `paymentMethod === 'transfer'`, y
+   * es el único camino por el que el CBU del local llega al cliente: ni el
+   * catálogo ni el checkout lo muestran, porque un CBU visible sin un pedido
+   * asociado es un dato que cualquiera scrapea y que no le sirve a nadie.
+   *
+   * Nunca trae el CUIT del titular ni el resultado del contraste: esas dos
+   * columnas no tienen grant para `anon`.
+   */
+  bankAccount: StoreBankAccount | null
   /**
    * Solo el nombre de pila del repartidor, y solo mientras el pedido está en la
    * calle. Nunca apellido ni teléfono: esta vista la ve cualquiera con el token,
@@ -763,6 +848,20 @@ export type RateLimitBucket =
   | 'payment_change:store'
   | 'support:store'
   | 'support:store:day'
+  // Cambiar la cuenta bancaria redirige TODA la plata que el local cobra por
+  // transferencia, igual que cambiar el access token de Mercado Pago. Mismo
+  // balde, mismo modo: `onError: 'deny'`.
+  | 'bank_account_change:store'
+  // Subida del comprobante. Es el único endpoint del producto que acepta un
+  // archivo de alguien sin sesión: lo único que lo autoriza es el
+  // `public_token` del pedido.
+  //
+  // `receipt:order` es la ventana anti-abuso que pidió el dueño y NO es la regla
+  // de negocio: "un comprobante por pedido" la sostienen el trigger de Postgres
+  // y el CAS de la aplicación. Este balde solo evita que alguien con el token
+  // martille el endpoint.
+  | 'receipt:order'
+  | 'receipt:ip'
 
 export type RateLimitDecision = {
   allowed: boolean

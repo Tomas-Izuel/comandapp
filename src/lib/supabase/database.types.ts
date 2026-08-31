@@ -433,6 +433,11 @@ export type Database = {
           store_id: number
           subtotal_cents: number
           total_cents: number
+          transfer_receipt_mime: string | null
+          transfer_receipt_path: string | null
+          transfer_receipt_sha256: string | null
+          transfer_receipt_size: number | null
+          transfer_receipt_uploaded_at: string | null
           updated_at: string
         }
         Insert: {
@@ -483,6 +488,11 @@ export type Database = {
           store_id: number
           subtotal_cents?: number
           total_cents?: number
+          transfer_receipt_mime?: string | null
+          transfer_receipt_path?: string | null
+          transfer_receipt_sha256?: string | null
+          transfer_receipt_size?: number | null
+          transfer_receipt_uploaded_at?: string | null
           updated_at?: string
         }
         Update: {
@@ -533,6 +543,11 @@ export type Database = {
           store_id?: number
           subtotal_cents?: number
           total_cents?: number
+          transfer_receipt_mime?: string | null
+          transfer_receipt_path?: string | null
+          transfer_receipt_sha256?: string | null
+          transfer_receipt_size?: number | null
+          transfer_receipt_uploaded_at?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -814,6 +829,56 @@ export type Database = {
           role?: string
         }
         Relationships: []
+      }
+      store_bank_accounts: {
+        Row: {
+          alias: string | null
+          bank_name: string | null
+          cbu: string | null
+          checked_at: string | null
+          created_at: string
+          holder_match: string | null
+          holder_name: string
+          holder_tax_id: string | null
+          is_active: boolean
+          store_id: number
+          updated_at: string
+        }
+        Insert: {
+          alias?: string | null
+          bank_name?: string | null
+          cbu?: string | null
+          checked_at?: string | null
+          created_at?: string
+          holder_match?: string | null
+          holder_name: string
+          holder_tax_id?: string | null
+          is_active?: boolean
+          store_id: number
+          updated_at?: string
+        }
+        Update: {
+          alias?: string | null
+          bank_name?: string | null
+          cbu?: string | null
+          checked_at?: string | null
+          created_at?: string
+          holder_match?: string | null
+          holder_name?: string
+          holder_tax_id?: string | null
+          is_active?: boolean
+          store_id?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_bank_accounts_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: true
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       store_branding: {
         Row: {
@@ -1117,6 +1182,7 @@ export type Database = {
           slug: string
           status: string
           timezone: string
+          transfer_payment_enabled: boolean
           uber_eats_url: string | null
           updated_at: string
           whatsapp_phone_e164: string | null
@@ -1155,6 +1221,7 @@ export type Database = {
           slug: string
           status?: string
           timezone?: string
+          transfer_payment_enabled?: boolean
           uber_eats_url?: string | null
           updated_at?: string
           whatsapp_phone_e164?: string | null
@@ -1193,6 +1260,7 @@ export type Database = {
           slug?: string
           status?: string
           timezone?: string
+          transfer_payment_enabled?: boolean
           uber_eats_url?: string | null
           updated_at?: string
           whatsapp_phone_e164?: string | null
@@ -1292,7 +1360,10 @@ export type Database = {
         Args: { p_on_date: string; p_store_id: number }
         Returns: undefined
       }
-      expire_pending_orders: { Args: { p_minutes?: number }; Returns: number }
+      expire_pending_orders: {
+        Args: { p_minutes?: number; p_transfer_minutes?: number }
+        Returns: number
+      }
       platform_metrics: { Args: never; Returns: Json }
       platform_stores: { Args: { p_store_id?: number }; Returns: Json }
       set_store_hours: {

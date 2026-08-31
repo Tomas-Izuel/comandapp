@@ -49,6 +49,7 @@ export default async function CheckoutPage(props: PageProps<'/[store]/checkout'>
       storeAddress={store.address}
       inStorePaymentEnabled={store.inStorePaymentEnabled}
       onlinePaymentEnabled={store.onlinePaymentEnabled}
+      transferPaymentEnabled={store.transferPaymentEnabled}
       timezone={store.timezone}
       schedule={schedule}
       scheduledDeliveryEnabled={store.scheduling.deliveryEnabled}

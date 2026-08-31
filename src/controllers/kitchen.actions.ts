@@ -3,12 +3,14 @@
 import { z } from 'zod'
 import { toActionResult } from '@/lib/action-result'
 import { requireStoreMembership } from '@/models/store.model'
-import { updateOrderStatus, markPaidInStore, getActiveOrders } from '@/models/order.model'
+import { updateOrderStatus, markPaidInStore, getActiveOrders, getPendingTransferOrders } from '@/models/order.model'
 import { assignCourier, listCouriersForAssignment } from '@/models/dispatch.model'
 import {
   dispatchReadyNotification,
   dispatchOnTheWayNotification,
   dispatchCancelledNotification,
+  confirmTransferPayment,
+  getTransferReceipt,
 } from '@/controllers/kitchen.controller'
 import { type NotificationResult } from '@/services/notifications'
 import { orderStatusSchema, type OrderStatus } from '@/models/schemas/order.schema'
@@ -160,6 +162,70 @@ export async function fetchStoreCouriersAction(storeId: number): Promise<ActionR
       return listCouriersForAssignment(store)
     },
     'kitchen.fetchStoreCouriers',
+    { storeId },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Transferencia bancaria — la bandeja de "Transferencias por confirmar" y su
+// visor. Las tres acciones piden `requireStoreMembership(storeId)` a secas,
+// SIN `{ role: 'owner' }`: el que confirma que la plata entró no es
+// necesariamente el dueño, es quien está en el mostrador en ese momento —
+// mismo criterio que `markPaidInStoreAction`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Confirma que la plata de una transferencia entró a la cuenta del local. NO
+ * exige que exista comprobante (00-architecture.md §5.9): si el staff resolvió
+ * el problema por WhatsApp, confirma igual.
+ */
+export async function confirmTransferPaymentAction(p: {
+  storeId: number
+  orderId: number
+  reference?: string
+}): Promise<ActionResult> {
+  return toActionResult(
+    async () => {
+      const storeId = positiveId.parse(p.storeId)
+      const orderId = positiveId.parse(p.orderId)
+      const { userId } = await requireStoreMembership(storeId)
+      await confirmTransferPayment({ storeId, orderId, reference: p.reference ?? null, userId })
+    },
+    'kitchen.confirmTransferPayment',
+    { storeId: p.storeId, orderId: p.orderId },
+  )
+}
+
+/**
+ * URL firmada (5 minutos) del comprobante, para el visor de la bandeja de
+ * transferencias. `null` si el pedido no tiene uno — el botón de confirmar
+ * pago tiene que seguir habilitado igual.
+ */
+export async function transferReceiptUrlAction(p: {
+  storeId: number
+  orderId: number
+}): Promise<ActionResult<{ url: string; mime: string } | null>> {
+  return toActionResult(
+    async () => {
+      const storeId = positiveId.parse(p.storeId)
+      const orderId = positiveId.parse(p.orderId)
+      await requireStoreMembership(storeId)
+      return getTransferReceipt({ storeId, orderId })
+    },
+    'kitchen.transferReceiptUrl',
+    { storeId: p.storeId, orderId: p.orderId },
+  )
+}
+
+/** La bandeja de "Transferencias por confirmar" del KDS: pedidos `pending` de pago por transferencia. */
+export async function fetchPendingTransfersAction(storeId: number): Promise<ActionResult<Order[]>> {
+  return toActionResult(
+    async () => {
+      const store = positiveId.parse(storeId)
+      await requireStoreMembership(store)
+      return getPendingTransferOrders(store)
+    },
+    'kitchen.fetchPendingTransfers',
     { storeId },
   )
 }

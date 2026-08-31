@@ -33,3 +33,23 @@ export function productImageUrl(path: string | null | undefined): string | null 
 export function productImagePath(storeId: number, fileName: string): string {
   return `${storeId}/${fileName}`
 }
+
+/**
+ * Bucket del comprobante de transferencia: privado, cero policies para
+ * `anon`/`authenticated`. El único camino es `service_role` detrás de un
+ * chequeo explícito (subir: el token del pedido; leer: `requireStoreMembership`
+ * del staff) — no hace falta URL pública ni policy, a diferencia de
+ * `product-images`.
+ */
+export const ORDER_RECEIPTS_BUCKET = 'order-receipts'
+
+/**
+ * Path determinístico del comprobante: `{store_id}/{order_id}/comprobante`,
+ * SIN extensión. Con un comprobante por pedido (invariante que sostiene el
+ * trigger de Postgres, no esta función), esto garantiza un objeto por pedido,
+ * como máximo, para siempre — el MIME real vive en `orders.transfer_receipt_mime`
+ * y se lo pasa a `createSignedUrl`/`Content-Type` al servir el archivo.
+ */
+export function orderReceiptPath(storeId: number, orderId: number): string {
+  return `${storeId}/${orderId}/comprobante`
+}
