@@ -1,6 +1,6 @@
 export const metadata = { title: 'Política de privacidad' }
 
-const CONTACT_EMAIL = 'tomasizuel@gmail.com'
+const CONTACT_EMAIL = 'hola@comandapp.ar'
 
 /**
  * Server Component estática, sin data fetching: la política describe lo que

@@ -3,7 +3,8 @@
 import { useEffect, useState, useTransition } from 'react'
 import { toast } from 'sonner'
 import { useDraggable } from '@dnd-kit/core'
-import { AlertTriangle, Banknote, Bike, Bot, Landmark, Loader2, MessageCircle, Undo2, X } from 'lucide-react'
+import { AlertTriangle, Banknote, Bike, Bot, Landmark, Loader2, Undo2, X } from 'lucide-react'
+import { WhatsApp } from '@/components/ui/whatsapp'
 import { Panel, StatusPill } from '@/views/shared/surfaces'
 import { PaymentNotice } from '@/views/shared/order-status'
 import { Button } from '@/components/ui/button'
@@ -320,7 +321,28 @@ export function OrderCard({
             {waLink ? (
               <a href={waLink} target="_blank" rel="noreferrer" className="block">
                 <Button variant="outline" className="h-12 w-full gap-2 text-base">
-                  <MessageCircle className="size-4" />
+                  {/*
+                    Ícono real del logo (antes `MessageCircle` genérico de
+                    lucide): el componente propio ya existe y lo usa la
+                    vitrina, así que acá no había motivo para seguir con el
+                    genérico.
+
+                    El verde de marca (#25D366, fijo en el SVG) se mantiene a
+                    propósito en vez de neutralizarlo a `currentColor`: es un
+                    logo, no texto, y en un tablero de cocina que se mira de
+                    reojo el color ayuda a encontrar ESTE botón entre los
+                    demás outline/ghost, todos grises. Contraste medido:
+                    ~2:1 sobre el fondo claro del admin y ~6.6:1 sobre el
+                    oscuro — bajo para texto, pero el ícono no es el único
+                    portador del dato (el label "Avisar por WhatsApp" ya lo
+                    dice), así que 1.4.11 no lo exige acá.
+
+                    Tamaño bajado un escalón frente al resto de los íconos de
+                    este botón (`size-3.5`, no `size-4` como Banknote/Loader2):
+                    un logo relleno pesa ópticamente más que un trazo de 2px
+                    de lucide, y a size-4 se veía más grande que sus vecinos.
+                  */}
+                  <WhatsApp className="size-3.5" aria-hidden />
                   Avisar por WhatsApp
                 </Button>
               </a>

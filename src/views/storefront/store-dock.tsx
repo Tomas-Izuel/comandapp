@@ -22,11 +22,14 @@ import { Instagram } from '@/components/ui/instagram'
  * del local. Un canal que el local no configuró simplemente no se dibuja —
  * "un botón muerto no es una barra, es una promesa rota".
  *
- * lucide-react no trae logos de marca (ni WhatsApp ni Instagram): por eso
- * WhatsApp usa `MessageCircle` (genérico, como ya resuelve el resto del
- * producto) e Instagram usa `InstagramMark`, un SVG propio en el mismo trazo
- * que lucide — la alternativa que la regla dura del proyecto deja explícita
- * ("lucide-react O SVG propio"), no un glifo/emoji de reemplazo.
+ * lucide-react no trae logos de marca (ni WhatsApp ni Instagram): la salida
+ * que deja la regla dura del proyecto es "lucide-react O SVG propio", nunca
+ * un glifo/emoji de reemplazo. Los dos ya tienen el suyo —
+ * `@/components/ui/whatsapp.tsx` y `@/components/ui/instagram.tsx` — y este
+ * archivo usa el MISMO componente en el botón directo del dock y en la fila
+ * de "más canales" (`ChannelRow.icon`), para no repetir el drift que tenía
+ * antes: Instagram se dibujaba a color acá y como trazo gris genérico en la
+ * lista del Drawer, dos glifos distintos para el mismo canal.
  */
 export function StoreDock({ store }: { store: StoreWithBranding }) {
   const { lines, itemCount, hydrated } = useCart()
@@ -58,7 +61,7 @@ export function StoreDock({ store }: { store: StoreWithBranding }) {
     : null
   const mapsRow: ChannelRow | null = mapsHref ? { key: 'maps', label: 'Cómo llegar', href: mapsHref, icon: MapPin } : null
   const instagramRow: ChannelRow | null = store.links.instagramHandle
-    ? { key: 'instagram', label: 'Instagram', href: `https://instagram.com/${store.links.instagramHandle}`, icon: InstagramMark }
+    ? { key: 'instagram', label: 'Instagram', href: `https://instagram.com/${store.links.instagramHandle}`, icon: Instagram }
     : null
   const rawDeliveryRows: (ChannelRow | null)[] = [
     store.links.rappiUrl ? { key: 'rappi', label: 'Rappi', href: store.links.rappiUrl, icon: Bike } : null,
@@ -319,31 +322,5 @@ function CartSlot({
         )}
       </span>
     </Link>
-  )
-}
-
-/**
- * Instagram no tiene ícono en lucide-react (los logos de marca no se
- * mantienen ahí — mismo motivo por el que WhatsApp usa `MessageCircle`).
- * Mismo trazo que la librería: `viewBox` 24×24, stroke 2, cabos redondeados.
- */
-function InstagramMark({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width={24}
-      height={24}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden
-    >
-      <rect x="3" y="3" width="18" height="18" rx="5" />
-      <circle cx="12" cy="12" r="4" />
-      <line x1="17.5" x2="17.51" y1="6.5" y2="6.5" />
-    </svg>
   )
 }

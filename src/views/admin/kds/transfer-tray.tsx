@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { FileText, Landmark, Loader2, MessageCircle, Receipt } from 'lucide-react'
+import { FileText, Landmark, Loader2, Receipt } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { WhatsApp } from '@/components/ui/whatsapp'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -200,7 +201,8 @@ function ConfirmDialog({
         <DialogFooter className="flex-col gap-2 sm:flex-col">
           <a href={whatsappHref(order)} target="_blank" rel="noreferrer" className="w-full">
             <Button type="button" variant="outline" className="h-11 w-full gap-2">
-              <MessageCircle className="size-4" aria-hidden />
+              {/* Ícono real y tamaño reducido: mismo criterio que `order-card.tsx` (ver el comentario ahí). */}
+              <WhatsApp className="size-3.5" aria-hidden />
               Escribirle por WhatsApp
             </Button>
           </a>

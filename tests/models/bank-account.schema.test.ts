@@ -70,9 +70,14 @@ describe('bankAccountInputSchema — D3: CBU, CVU o alias, cualquiera de los tre
     if (!result.success) expect(result.error.issues[0].message).toMatch(/6 a 20 caracteres/)
   })
 
-  it('un cbu/alias vacío (string "") se trata como AUSENTE, no como inválido — y sigue exigiendo al menos uno', () => {
+  it('un cbu/alias vacío (string "") se trata como AUSENTE, no como inválido — y sigue exigiendo al menos uno, con el mensaje que el dueño va a leer', () => {
     const result = bankAccountInputSchema.safeParse({ cbu: '', alias: '', holderName: 'La Birra SRL' })
     expect(result.success).toBe(false)
+    // El reporte de T1 (2026-08-31) fue justamente "dice que alcanza con
+    // alias, pero al alta falla" — el schema no era el problema, pero SI
+    // este mensaje alguna vez se rompiera o desapareciera, un alta con los
+    // dos campos vacíos volvería a fallar sin decirle al dueño qué falta.
+    if (!result.success) expect(result.error.issues[0].message).toBe('Cargá un CBU, un CVU o un alias')
   })
 
   it('con cbu Y alias los dos presentes, entran los dos', () => {
