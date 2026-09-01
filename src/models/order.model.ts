@@ -137,6 +137,8 @@ function toOrder(row: OrderRow & { courier?: CourierEmbed }, items: OrderItem[])
     currency: row.currency,
     subtotalCents: row.subtotal_cents,
     totalCents: row.total_cents,
+    discountCents: row.discount_cents,
+    couponCodeSnapshot: row.coupon_code_snapshot,
     basePrepMinutes: row.base_prep_minutes,
     demandMultiplier: row.demand_multiplier == null ? null : Number(row.demand_multiplier),
     etaMinutes: row.eta_minutes,
@@ -223,6 +225,8 @@ function toOrderPublicView(row: OrderWithItemsAndStore): OrderPublicView {
     currency: row.currency,
     subtotalCents: row.subtotal_cents,
     totalCents: row.total_cents,
+    discountCents: row.discount_cents,
+    couponCodeSnapshot: row.coupon_code_snapshot,
     etaMinutes: row.eta_minutes,
     etaAt: row.eta_at,
     paymentMethod,
@@ -394,6 +398,10 @@ export async function priceCart(store: Store, items: CartItem[]): Promise<Priced
     subtotalCents,
     totalCents: subtotalCents,
     basePrepMinutes,
+    // El cupón se aplica en una capa de arriba: `priceCart` cotiza el CARRITO y
+    // no conoce el método de pago, que es una de las condiciones del cupón.
+    discountCents: 0,
+    coupon: null,
   }
 }
 
@@ -2042,6 +2050,7 @@ export async function getStoreDashboard(storeId: number, days = 30): Promise<Sto
     topProducts: rpc.topProducts as TopProduct[],
     ordersByStatus,
     averageTicketCents: rpc.averageTicketCents,
+    discountCents: rpc.discountCents,
     prepAccuracy: rpc.prepAccuracy,
   }
 }
