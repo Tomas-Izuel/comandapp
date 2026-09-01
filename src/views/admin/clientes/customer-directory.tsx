@@ -5,14 +5,16 @@ import { useRouter } from 'next/navigation'
 import { Users } from 'lucide-react'
 import { Panel, SearchField } from '@/views/shared/surfaces'
 import { EmptyState } from '@/views/shared/states'
-import { CustomerRow } from './customer-row'
+import { CUSTOMER_GRID_COLS, CustomerRow } from './customer-row'
 import { CustomerSheet } from './customer-sheet'
 import type { Coupon, CustomerDirectory, StoreCustomer } from '@/models/types'
 
 /** Cabecera de columnas, solo en `lg` — abajo la fila colapsa y las etiquetas van inline (ver `customer-row.tsx`). */
 function ColumnHeader() {
   return (
-    <div className="text-muted-foreground border-border hidden text-xs font-medium lg:grid lg:grid-cols-[minmax(0,1.4fr)_7rem_5rem_7rem_8rem_auto] lg:gap-4 lg:border-b lg:pb-2">
+    <div
+      className={`text-muted-foreground border-border hidden text-xs font-medium lg:grid ${CUSTOMER_GRID_COLS} lg:gap-4 lg:border-b lg:pb-2`}
+    >
       <span>Cliente</span>
       <span>Gastado</span>
       <span>Pedidos</span>
