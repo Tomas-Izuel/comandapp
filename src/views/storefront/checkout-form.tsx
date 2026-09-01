@@ -82,7 +82,7 @@ export function CheckoutForm({
   opensAt: string | null
 }) {
   const router = useRouter()
-  const { lines, hydrated, ensureIdempotencyKey } = useCart()
+  const { lines, hydrated, ensureIdempotencyKey, couponCode: cartCouponCode, setCouponCode } = useCart()
   // Vista previa embebida desde `/admin/apariencia` (?preview=brand): el
   // único punto donde el pedido se crea DE VERDAD es este submit, así que la
   // guarda va acá — un solo lugar, no un botón deshabilitado por página.
@@ -123,6 +123,20 @@ export function CheckoutForm({
   const [formError, setFormError] = React.useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({})
   const [rememberedContact, setRememberedContact] = React.useState(false)
+
+  // Texto del campo de cupón. Empieza vacío y se precarga UNA vez con lo que
+  // ya había en el carrito (`cartCouponCode`) apenas hidrata — mismo criterio
+  // que la memoria de contacto de más abajo: sin esto, un cliente que volvió
+  // al checkout con un cupón ya guardado vería el campo en blanco aunque el
+  // carrito lo tenga.
+  const [couponInput, setCouponInput] = React.useState('')
+  const [couponPrefilled, setCouponPrefilled] = React.useState(false)
+  React.useEffect(() => {
+    if (couponPrefilled || !hydrated) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- precarga única al hidratar, no un sync loop
+    setCouponInput(cartCouponCode ?? '')
+    setCouponPrefilled(true)
+  }, [hydrated, cartCouponCode, couponPrefilled])
 
   // Foco al primer error tras un submit fallido: mostrar el mensaje no
   // alcanza si el cliente no lo ve, y en mobile el error queda arriba del
@@ -180,7 +194,21 @@ export function CheckoutForm({
     setRememberedContact(false)
   }
 
-  const quote = useCheckoutQuote(storeSlug, hydrated ? lines : [])
+  // Mismo criterio que `effectiveDeliveryMethod` de más abajo: si el método
+  // elegido dejó de estar en la lista (la cotización se refrescó y la config
+  // de la tienda cambió a mitad de checkout), se usa el primero que sigue
+  // disponible en vez de mandar un método que ya no existe. Se calcula ANTES
+  // de pedir la cotización porque viaja en la misma request: un cupón
+  // restringido a un medio de pago se re-evalúa cada vez que este valor
+  // cambia (00-architecture.md §5.9.4).
+  const effectivePaymentMethod: PaymentMethod = availablePaymentMethods.includes(paymentMethod)
+    ? paymentMethod
+    : (availablePaymentMethods[0] ?? 'in_store')
+
+  const quote = useCheckoutQuote(storeSlug, hydrated ? lines : [], {
+    paymentMethod: effectivePaymentMethod,
+    couponCode: cartCouponCode,
+  })
   const delivery = quote.status === 'ready' ? quote.data.delivery : null
 
   // Derivado, no sincronizado con un efecto: si el envío deja de estar
@@ -191,14 +219,6 @@ export function CheckoutForm({
   // cliente sí controló con el radio.
   const effectiveDeliveryMethod: DeliveryMethod =
     deliveryMethod === 'delivery' && (!delivery || !delivery.enabled || !delivery.available) ? 'pickup' : deliveryMethod
-
-  // Mismo criterio que `effectiveDeliveryMethod` de arriba: si el método
-  // elegido dejó de estar en la lista (la cotización se refrescó y la config
-  // de la tienda cambió a mitad de checkout), se usa el primero que sigue
-  // disponible en vez de mandar un método que ya no existe.
-  const effectivePaymentMethod: PaymentMethod = availablePaymentMethods.includes(paymentMethod)
-    ? paymentMethod
-    : (availablePaymentMethods[0] ?? 'in_store')
 
   // El pago en el local convive con delivery: el repartidor cobra en la
   // puerta (`store.delivery.courierCollects`), así que "pagás al retirar" es
@@ -294,6 +314,41 @@ export function CheckoutForm({
   }
 
   const belowMinimum = quote.status === 'ready' && quote.data.priced.subtotalCents < quote.data.store.minOrderCents
+  const couponQuote = quote.status === 'ready' ? quote.data.priced.coupon : null
+
+  /**
+   * Aplica o cambia el cupón: lo que hay tipeado pasa al carrito
+   * (`setCouponCode`, que ya descarta la `idempotencyKey` — un cupón cambia
+   * la plata igual que una línea) y la próxima cotización lo manda solo. Un
+   * código vacío es lo mismo que quitarlo.
+   */
+  function handleApplyCoupon() {
+    const trimmed = couponInput.trim().toUpperCase()
+    setCouponInput(trimmed)
+    setCouponCode(trimmed || null)
+  }
+
+  /**
+   * El input vive DENTRO del `<form>` del checkout: sin el `preventDefault`,
+   * Enter dispara el submit nativo y manda el pedido a precio lleno con el
+   * código tipeado y sin aplicar — justo la pérdida silenciosa que el resto
+   * de este cupón evita en todos los demás casos. Bloquear el submit no
+   * alcanza solo: en mobile el teclado ofrece "Enter"/"Ir" apenas se termina
+   * de tipear un código, y es el gesto esperado, no el botón "Aplicar" al
+   * lado. Cablea al mismo handler que el botón, con la misma guarda
+   * (nada que aplicar, o el código no cambió).
+   */
+  function handleCouponKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    if (!couponInput.trim() || couponInput.trim() === (cartCouponCode ?? '')) return
+    handleApplyCoupon()
+  }
+
+  function handleRemoveCoupon() {
+    setCouponInput('')
+    setCouponCode(null)
+  }
 
   /**
    * El texto de "Cómo pagás" cuando hay un solo método habilitado (sin radio
@@ -385,6 +440,12 @@ export function CheckoutForm({
             notes: l.notes ?? undefined,
           })),
           paymentMethod: effectivePaymentMethod,
+          // Se manda tal cual está en el carrito, aplicado o rechazado: si
+          // dejó de valer justo al confirmar (alguien más agotó el cupo, el
+          // dueño lo pausó), `createOrder` corta con el mismo motivo que ya
+          // se vio en pantalla — nunca se cobra de más en silencio
+          // (00-architecture.md §5.9.2).
+          couponCode: cartCouponCode ?? undefined,
           customerName,
           customerPhone,
           customerEmail: customerEmail.trim() || undefined,
@@ -541,10 +602,22 @@ export function CheckoutForm({
             onChange={(event) => setCustomerEmail(event.target.value)}
             placeholder="tu@email.com"
             aria-invalid={!!fieldErrors.customerEmail}
-            aria-describedby={fieldErrors.customerEmail ? 'customerEmail-hint customerEmail-error' : 'customerEmail-hint'}
+            aria-describedby={
+              fieldErrors.customerEmail
+                ? 'customerEmail-hint customerEmail-promo-notice customerEmail-error'
+                : 'customerEmail-hint customerEmail-promo-notice'
+            }
           />
           <p id="customerEmail-hint" className="text-muted-foreground text-xs">
             Te mandamos el comprobante y el aviso de “listo” también por acá. El aviso principal sigue siendo por WhatsApp.
+          </p>
+          {/* Consentimiento, no descripción: recién en esta entrega existe una
+              forma de mandar una promo, así que decir esto antes sería una
+              afirmación falsa. Copy cerrado, sin checkbox — dejar el mail es
+              el único gesto que hace falta (00-architecture.md §5.12.3). */}
+          <p id="customerEmail-promo-notice" className="text-muted-foreground text-xs">
+            Si dejás tu email, además del comprobante el local puede mandarte promos. Te podés dar de baja desde cualquier
+            mail.
           </p>
           {fieldErrors.customerEmail ? (
             <p id="customerEmail-error" className="text-destructive text-xs">
@@ -756,8 +829,50 @@ export function CheckoutForm({
         {fieldErrors.scheduledFor ? <p className="text-destructive text-xs">{fieldErrors.scheduledFor}</p> : null}
       </Panel>
 
-      <Panel className="flex flex-col gap-2 p-4 sm:p-5">
+      <Panel className="flex flex-col gap-3 p-4 sm:p-5">
         <h2 className="text-sm font-semibold">Tu pedido</h2>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="couponCode">
+            Cupón de descuento <span className="text-muted-foreground font-normal">(opcional)</span>
+          </Label>
+          <div className="flex gap-2">
+            <Input
+              id="couponCode"
+              name="couponCode"
+              className="h-11 flex-1"
+              value={couponInput}
+              onChange={(event) => setCouponInput(event.target.value.toUpperCase())}
+              onKeyDown={handleCouponKeyDown}
+              placeholder="Código"
+              maxLength={16}
+              aria-invalid={couponQuote?.status === 'rejected'}
+              aria-describedby={couponQuote?.status === 'rejected' ? 'couponCode-error' : undefined}
+            />
+            {cartCouponCode ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="shrink-0"
+                onClick={handleRemoveCoupon}
+                aria-label="Quitar cupón"
+              >
+                <X className="size-4" aria-hidden />
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="secondary"
+              className="shrink-0"
+              onClick={handleApplyCoupon}
+              disabled={!couponInput.trim() || couponInput.trim() === (cartCouponCode ?? '')}
+            >
+              Aplicar
+            </Button>
+          </div>
+        </div>
+
         {quote.status === 'loading' ? (
           <p className="text-muted-foreground text-sm">Calculando el total…</p>
         ) : quote.status === 'error' ? (
@@ -771,6 +886,30 @@ export function CheckoutForm({
               <span className="text-muted-foreground">Subtotal</span>
               <Price cents={quote.data.priced.subtotalCents} currency={currency} className="tabular" />
             </div>
+            {couponQuote?.status === 'applied' && quote.data.priced.discountCents > 0 ? (
+              <div className="text-primary flex items-baseline justify-between">
+                <span>Descuento {couponQuote.code}</span>
+                <span className="tabular">
+                  −<Price cents={quote.data.priced.discountCents} currency={currency} />
+                </span>
+              </div>
+            ) : null}
+            {/* El cupón NUNCA desaparece en silencio: si dejó de servir (venció,
+                se agotó, o no aplica al método de pago elegido), la línea
+                queda tachada con el motivo al lado — un total que sube sin
+                explicación es lo peor que puede pasar en un checkout
+                (00-architecture.md §5.9.4). */}
+            {couponQuote?.status === 'rejected' ? (
+              <div className="flex flex-col gap-0.5">
+                <div className="text-muted-foreground flex items-baseline justify-between line-through">
+                  <span>Descuento {couponQuote.code}</span>
+                  <span className="tabular">−{formatCentsCompact(0, currency)}</span>
+                </div>
+                <p id="couponCode-error" className="text-destructive text-xs">
+                  {couponQuote.reason}
+                </p>
+              </div>
+            ) : null}
             {effectiveDeliveryMethod === 'delivery' ? (
               <div className="flex items-baseline justify-between">
                 <span className="text-muted-foreground">Envío</span>

@@ -406,12 +406,15 @@ async function startPendingChange(p: {
   timezone: string
   kind: PendingChangeKind
   payload: PendingChangePayload
+  /** Solo lo usa `coupon`, ver `createPendingChange`. `undefined` para los tres kinds originales. */
+  subjectId?: number
 }): Promise<{ requestId: number; sentTo: string }> {
   const { id, code } = await createPendingChange({
     storeId: p.storeId,
     userId: p.userId,
     kind: p.kind,
     payload: p.payload,
+    subjectId: p.subjectId,
   })
 
   await sendPaymentChangeCode({
@@ -565,6 +568,22 @@ export async function confirmPendingChangeAction(
       return
     }
 
+    // ⚠️ ESTE `if` NO ES DECORATIVO, Y ANTES NO ESTABA.
+    //
+    // Hasta la Entrega B esta rama era el DEFAULT implícito: cualquier `kind`
+    // que no fuera credenciales ni cuenta bancaria caía acá y escribía
+    // `courier_collects_payment`. Con tres kinds cerrados eso era correcto por
+    // accidente. Cuando la migración de cupones ensanchó el CHECK con
+    // `'coupon'`, pasó a ser una trampa: un pending change de cupón que llegara
+    // por acá haría `Boolean(undefined)` → **false**, o sea que APAGARÍA el
+    // cobro en la puerta del local sin que nadie lo pidiera y sin un error.
+    //
+    // Un `kind` desconocido tira. Es preferible un 500 legible a una escritura
+    // silenciosa sobre la política de caja de una tienda.
+    if (change.kind !== 'courier_payment_policy') {
+      throw new Error(`confirmPendingChangeAction: kind sin manejar (${change.kind})`)
+    }
+
     // `stores.courier_collects_payment` no se escribe con el cliente RLS aunque
     // el grant lo permita: si pasara por ahí, el formulario de Ajustes podría
     // volver a tocarlo sin código y toda esta confirmación sería decorado.
@@ -620,6 +639,11 @@ export async function resendPendingChangeCodeAction(
       timezone: store.timezone,
       kind: live.kind,
       payload: live.payload,
+      // Sin esto, `createPendingChange` invalidaba con `.is('subject_id', null)`
+      // y el pendiente ORIGINAL de un cupón (que sí tiene `subject_id`) quedaba
+      // vivo junto al recién reenviado — dos códigos vigentes a la vez
+      // (03-review.md, Hallazgo 6).
+      subjectId: live.subjectId ?? undefined,
     })
   }, 'admin.resendPendingChangeCode')
 }

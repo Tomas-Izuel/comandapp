@@ -12,6 +12,13 @@ const CONTACT_EMAIL = 'hola@comandapp.ar'
  * esta página queda mintiendo. La sección del comprobante de transferencia es
  * el ejemplo directo: los plazos de retención citados ahí tienen que coincidir
  * con las constantes de `src/app/api/cron/cleanup/route.ts` (T2.7).
+ *
+ * "El padrón del local" describe `store_customers` (`src/models/customer.model.ts`)
+ * y la baja de `/baja/[token]`. A propósito NO promete un borrado autoservicio
+ * ni un plazo de retención: hoy no existe ese camino de producto
+ * (00-architecture.md §5.12.5.1) y prometerlo sería mentir. Si algún día se
+ * construye una lista de supresión o un plazo real, esta sección se actualiza
+ * recién ahí — no antes.
  */
 export default function PrivacidadPage() {
   return (
@@ -41,6 +48,26 @@ export default function PrivacidadPage() {
             Tu pedido y sus datos de contacto quedan asociados al local que lo recibe. Ese local ve los datos de
             contacto de sus propios pedidos, para poder prepararlo y entregártelo. No se comparten con otros
             locales de la plataforma.
+          </p>
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <h2 className="text-xl font-semibold">El padrón del local</h2>
+          <p>
+            Cada local que te vendió algo guarda tu nombre, tu teléfono, tu email si lo dejaste, cuántos pedidos le
+            hiciste, cuánto gastaste en total y la fecha de tu último pedido. Ese registro es <strong>por local</strong>:
+            si le compraste a dos locales de la plataforma, cada uno tiene su propia fila con tus datos, y no se
+            comparten entre sí.
+          </p>
+          <p>
+            Si dejaste tu email, el local puede usarlo para mandarte promociones además del comprobante y el aviso
+            de &ldquo;pedido listo&rdquo;. Todo mail de promoción trae un link para darte de baja, y esa baja es
+            inmediata para los envíos que hace la plataforma en nombre del local — no para un mensaje que el local te
+            mande a mano por WhatsApp, que queda fuera de nuestro control.
+          </p>
+          <p>
+            Esta fila se conserva mientras el local use la plataforma. No tiene un plazo de borrado automático:
+            es tu historial comercial con ese local, no un registro temporal.
           </p>
         </section>
 
@@ -85,7 +112,9 @@ export default function PrivacidadPage() {
           <h2 className="text-xl font-semibold">Los emails</h2>
           <p>
             Si dejaste tu email, te mandamos el comprobante de tu pedido y el aviso de &ldquo;pedido listo&rdquo;
-            usando Resend, nuestro proveedor de envío de emails.
+            usando Resend, nuestro proveedor de envío de emails. El local también puede usar ese email para mandarte
+            promociones propias — ver &ldquo;El padrón del local&rdquo; más arriba para qué implica eso y cómo darte
+            de baja.
           </p>
         </section>
 

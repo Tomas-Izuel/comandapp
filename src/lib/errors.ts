@@ -113,7 +113,13 @@ export function toApiError(err: unknown, context: string): ApiErrorResult {
  * siquiera se nombra: un cliente legítimo no puede producir eso, así que el
  * detalle solo le sirve a quien está probando el endpoint.
  */
-type ZodLikeIssue = { code: string; message: string; path: readonly PropertyKey[] }
+type ZodLikeIssue = {
+  code: string
+  message: string
+  path: readonly PropertyKey[]
+  /** Solo lo trae el issue `unrecognized_keys`. Va al LOG, nunca a la respuesta. */
+  keys?: readonly string[]
+}
 type ZodLike = { issues: readonly ZodLikeIssue[] }
 
 /**
@@ -135,7 +141,21 @@ export function zodToApiError(input: ZodLike | readonly ZodLikeIssue[]): {
   if (!first) return { body: { error: 'Revisá los datos del pedido' }, status: 400 }
 
   if (first.code === 'unrecognized_keys') {
-    log.error('validation', 'payload con claves desconocidas', undefined, { code: first.code })
+    // Las claves van al LOG y no a la respuesta, y las dos mitades importan.
+    //
+    // Fuera: nombrárselas al cliente le dice a quien está sondeando qué campos
+    // conoce el schema.
+    //
+    // Dentro: el sentido de `.strict()` es que "si algo empieza a mandar
+    // precios se ve". Con `{ code: 'unrecognized_keys' }` a secas no se ve
+    // nada — se sabe que llegó algo desconocido, no QUÉ. Y eso es justamente el
+    // dato: un `unitPriceCents` o un `discountCents` en el payload es un
+    // cliente intentando poner el precio, que es la invariante que este
+    // producto defiende. Es un log del servidor: no hay nada que filtrar.
+    log.error('validation', 'payload con claves desconocidas', undefined, {
+      code: first.code,
+      keys: first.keys ?? [],
+    })
     return { body: { error: 'El pedido llegó con un formato inválido' }, status: 400 }
   }
 

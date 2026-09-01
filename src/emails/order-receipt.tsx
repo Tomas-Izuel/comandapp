@@ -26,7 +26,14 @@ export default function OrderReceiptEmail(props: EmailVars) {
     subtotalCents,
     totalCents,
     storeAddress,
+    discountCents,
+    couponCode,
   } = props
+
+  // Solo si HUBO descuento: la mayoría de los pedidos no tiene cupón, y una
+  // línea en $0 no aporta nada. Sin esto, un cliente ve ítems que suman
+  // $12.400 y un total de $12.040 sin que el mail explique la diferencia.
+  const hasDiscount = (discountCents ?? 0) > 0
 
   const money = (cents: number) => formatCentsCompact(cents, currency)
 
@@ -169,6 +176,20 @@ export default function OrderReceiptEmail(props: EmailVars) {
                 <Text style={{ margin: 0, fontSize: 13, color: palette.body }}>{money(subtotalCents)}</Text>
               </td>
             </tr>
+            {hasDiscount ? (
+              <tr>
+                <td style={{ padding: '2px 0' }}>
+                  <Text style={{ margin: 0, fontSize: 13, color: palette.accent }}>
+                    Descuento{couponCode ? ` ${couponCode}` : ''}
+                  </Text>
+                </td>
+                <td style={{ padding: '2px 0' }} align="right">
+                  <Text style={{ margin: 0, fontSize: 13, color: palette.accent }}>
+                    −{money(discountCents ?? 0)}
+                  </Text>
+                </td>
+              </tr>
+            ) : null}
             <tr>
               <td style={{ padding: '8px 0 0' }}>
                 <Text style={{ margin: 0, fontSize: 16, color: palette.ink, fontWeight: 800 }}>Total</Text>

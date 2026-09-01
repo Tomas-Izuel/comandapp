@@ -9,6 +9,69 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      campaign_recipients: {
+        Row: {
+          attempts: number
+          campaign_id: number
+          chunk_index: number
+          created_at: string
+          customer_id: number | null
+          email: string
+          id: number
+          last_attempt_at: string | null
+          last_error: string | null
+          provider_ref: string | null
+          sent_at: string | null
+          status: string
+          store_id: number
+        }
+        Insert: {
+          attempts?: number
+          campaign_id: number
+          chunk_index: number
+          created_at?: string
+          customer_id?: number | null
+          email: string
+          id?: never
+          last_attempt_at?: string | null
+          last_error?: string | null
+          provider_ref?: string | null
+          sent_at?: string | null
+          status?: string
+          store_id: number
+        }
+        Update: {
+          attempts?: number
+          campaign_id?: number
+          chunk_index?: number
+          created_at?: string
+          customer_id?: number | null
+          email?: string
+          id?: never
+          last_attempt_at?: string | null
+          last_error?: string | null
+          provider_ref?: string | null
+          sent_at?: string | null
+          status?: string
+          store_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_recipients_campaign_same_store_fkey"
+            columns: ["store_id", "campaign_id"]
+            isOneToOne: false
+            referencedRelation: "coupon_campaigns"
+            referencedColumns: ["store_id", "id"]
+          },
+          {
+            foreignKeyName: "campaign_recipients_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "store_customers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       categories: {
         Row: {
           created_at: string
@@ -40,6 +103,218 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "categories_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      coupon_campaigns: {
+        Row: {
+          coupon_id: number
+          created_at: string
+          created_by: string | null
+          failed_count: number
+          finished_at: string | null
+          id: number
+          message: string | null
+          recipients_total: number
+          segment_kind: string
+          segment_min_spent_cents: number | null
+          segment_top_n: number | null
+          sent_count: number
+          skipped_count: number
+          started_at: string | null
+          status: string
+          stopped_reason: string | null
+          store_id: number
+          subject: string
+        }
+        Insert: {
+          coupon_id: number
+          created_at?: string
+          created_by?: string | null
+          failed_count?: number
+          finished_at?: string | null
+          id?: never
+          message?: string | null
+          recipients_total?: number
+          segment_kind: string
+          segment_min_spent_cents?: number | null
+          segment_top_n?: number | null
+          sent_count?: number
+          skipped_count?: number
+          started_at?: string | null
+          status?: string
+          stopped_reason?: string | null
+          store_id: number
+          subject: string
+        }
+        Update: {
+          coupon_id?: number
+          created_at?: string
+          created_by?: string | null
+          failed_count?: number
+          finished_at?: string | null
+          id?: never
+          message?: string | null
+          recipients_total?: number
+          segment_kind?: string
+          segment_min_spent_cents?: number | null
+          segment_top_n?: number | null
+          sent_count?: number
+          skipped_count?: number
+          started_at?: string | null
+          status?: string
+          stopped_reason?: string | null
+          store_id?: number
+          subject?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "coupon_campaigns_coupon_id_fkey"
+            columns: ["coupon_id"]
+            isOneToOne: false
+            referencedRelation: "coupons"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "coupon_campaigns_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      coupon_redemptions: {
+        Row: {
+          coupon_id: number
+          created_at: string
+          customer_phone_e164: string
+          discount_cents: number
+          id: number
+          order_id: number
+          redeemed_at: string | null
+          released_at: string | null
+          released_reason: string | null
+          status: string
+          store_id: number
+        }
+        Insert: {
+          coupon_id: number
+          created_at?: string
+          customer_phone_e164: string
+          discount_cents: number
+          id?: never
+          order_id: number
+          redeemed_at?: string | null
+          released_at?: string | null
+          released_reason?: string | null
+          status?: string
+          store_id: number
+        }
+        Update: {
+          coupon_id?: number
+          created_at?: string
+          customer_phone_e164?: string
+          discount_cents?: number
+          id?: never
+          order_id?: number
+          redeemed_at?: string | null
+          released_at?: string | null
+          released_reason?: string | null
+          status?: string
+          store_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "coupon_redemptions_coupon_same_store_fkey"
+            columns: ["store_id", "coupon_id"]
+            isOneToOne: false
+            referencedRelation: "coupons"
+            referencedColumns: ["store_id", "id"]
+          },
+          {
+            foreignKeyName: "coupon_redemptions_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: true
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      coupons: {
+        Row: {
+          amount_off_cents: number | null
+          code: string
+          created_at: string
+          created_by: string | null
+          discount_type: string
+          ends_at: string | null
+          id: number
+          max_discount_cents: number | null
+          max_redemptions: number
+          max_redemptions_per_phone: number | null
+          min_subtotal_cents: number
+          name: string
+          payment_methods: string[] | null
+          percent: number | null
+          redeemed_count: number
+          reserved_count: number
+          starts_at: string | null
+          status: string
+          store_id: number
+          updated_at: string
+        }
+        Insert: {
+          amount_off_cents?: number | null
+          code: string
+          created_at?: string
+          created_by?: string | null
+          discount_type: string
+          ends_at?: string | null
+          id?: never
+          max_discount_cents?: number | null
+          max_redemptions: number
+          max_redemptions_per_phone?: number | null
+          min_subtotal_cents?: number
+          name: string
+          payment_methods?: string[] | null
+          percent?: number | null
+          redeemed_count?: number
+          reserved_count?: number
+          starts_at?: string | null
+          status?: string
+          store_id: number
+          updated_at?: string
+        }
+        Update: {
+          amount_off_cents?: number | null
+          code?: string
+          created_at?: string
+          created_by?: string | null
+          discount_type?: string
+          ends_at?: string | null
+          id?: never
+          max_discount_cents?: number | null
+          max_redemptions?: number
+          max_redemptions_per_phone?: number | null
+          min_subtotal_cents?: number
+          name?: string
+          payment_methods?: string[] | null
+          percent?: number | null
+          redeemed_count?: number
+          reserved_count?: number
+          starts_at?: string | null
+          status?: string
+          store_id?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "coupons_store_id_fkey"
             columns: ["store_id"]
             isOneToOne: false
             referencedRelation: "stores"
@@ -390,6 +665,7 @@ export type Database = {
           base_prep_minutes: number | null
           cancelled_at: string | null
           confirmed_at: string | null
+          coupon_code_snapshot: string | null
           courier_id: number | null
           created_at: string
           currency: string
@@ -405,6 +681,7 @@ export type Database = {
           delivery_method: string
           delivery_minutes: number | null
           demand_multiplier: number | null
+          discount_cents: number
           eta_at: string | null
           eta_minutes: number | null
           external_ref: string | null
@@ -445,6 +722,7 @@ export type Database = {
           base_prep_minutes?: number | null
           cancelled_at?: string | null
           confirmed_at?: string | null
+          coupon_code_snapshot?: string | null
           courier_id?: number | null
           created_at?: string
           currency?: string
@@ -460,6 +738,7 @@ export type Database = {
           delivery_method?: string
           delivery_minutes?: number | null
           demand_multiplier?: number | null
+          discount_cents?: number
           eta_at?: string | null
           eta_minutes?: number | null
           external_ref?: string | null
@@ -500,6 +779,7 @@ export type Database = {
           base_prep_minutes?: number | null
           cancelled_at?: string | null
           confirmed_at?: string | null
+          coupon_code_snapshot?: string | null
           courier_id?: number | null
           created_at?: string
           currency?: string
@@ -515,6 +795,7 @@ export type Database = {
           delivery_method?: string
           delivery_minutes?: number | null
           demand_multiplier?: number | null
+          discount_cents?: number
           eta_at?: string | null
           eta_minutes?: number | null
           external_ref?: string | null
@@ -945,6 +1226,68 @@ export type Database = {
           },
         ]
       }
+      store_customers: {
+        Row: {
+          cancelled_orders_count: number
+          created_at: string
+          display_name: string
+          email: string | null
+          first_order_at: string | null
+          id: number
+          last_order_at: string | null
+          marketing_opt_out_at: string | null
+          notes: string | null
+          orders_count: number
+          phone_e164: string
+          store_id: number
+          total_spent_cents: number
+          unsubscribe_token: string
+          updated_at: string
+        }
+        Insert: {
+          cancelled_orders_count?: number
+          created_at?: string
+          display_name: string
+          email?: string | null
+          first_order_at?: string | null
+          id?: never
+          last_order_at?: string | null
+          marketing_opt_out_at?: string | null
+          notes?: string | null
+          orders_count?: number
+          phone_e164: string
+          store_id: number
+          total_spent_cents?: number
+          unsubscribe_token?: string
+          updated_at?: string
+        }
+        Update: {
+          cancelled_orders_count?: number
+          created_at?: string
+          display_name?: string
+          email?: string | null
+          first_order_at?: string | null
+          id?: never
+          last_order_at?: string | null
+          marketing_opt_out_at?: string | null
+          notes?: string | null
+          orders_count?: number
+          phone_e164?: string
+          store_id?: number
+          total_spent_cents?: number
+          unsubscribe_token?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "store_customers_store_id_fkey"
+            columns: ["store_id"]
+            isOneToOne: false
+            referencedRelation: "stores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       store_hours: {
         Row: {
           created_at: string
@@ -1112,6 +1455,7 @@ export type Database = {
           payload: Json
           requested_by: string
           store_id: number
+          subject_id: number | null
         }
         Insert: {
           attempts?: number
@@ -1124,6 +1468,7 @@ export type Database = {
           payload: Json
           requested_by: string
           store_id: number
+          subject_id?: number | null
         }
         Update: {
           attempts?: number
@@ -1136,6 +1481,7 @@ export type Database = {
           payload?: Json
           requested_by?: string
           store_id?: number
+          subject_id?: number | null
         }
         Relationships: [
           {
@@ -1273,9 +1619,45 @@ export type Database = {
     }
     Functions: {
       advance_auto_orders: { Args: never; Returns: Json }
+      campaign_segment_preview: {
+        Args: {
+          p_kind: string
+          p_min_spent?: number
+          p_store_id: number
+          p_top_n?: number
+        }
+        Returns: Json
+      }
       cancel_scheduled_orders: {
         Args: { p_night: string; p_pause?: boolean; p_store_id: number }
         Returns: Json
+      }
+      claim_campaign_recipients: {
+        Args: {
+          p_budget?: number
+          p_max_attempts?: number
+          p_retry_seconds?: number
+        }
+        Returns: {
+          amount_off_cents: number
+          campaign_id: number
+          chunk_index: number
+          coupon_code: string
+          coupon_ends_at: string
+          customer_name: string
+          discount_type: string
+          email: string
+          max_discount_cents: number
+          message: string
+          min_subtotal_cents: number
+          percent: number
+          recipient_id: number
+          store_id: number
+          store_name: string
+          store_slug: string
+          subject: string
+          unsubscribe_token: string
+        }[]
       }
       claim_event_deliveries: {
         Args: {
@@ -1350,6 +1732,10 @@ export type Database = {
           retry_after_seconds: number
         }[]
       }
+      coupon_detail: {
+        Args: { p_coupon_id: number; p_store_id: number }
+        Returns: Json
+      }
       courier_advance_order: {
         Args: { p_collected?: boolean; p_order_id: number; p_status: string }
         Returns: undefined
@@ -1359,6 +1745,20 @@ export type Database = {
       delete_store_hours_override: {
         Args: { p_on_date: string; p_store_id: number }
         Returns: undefined
+      }
+      enqueue_campaign: {
+        Args: {
+          p_budget?: number
+          p_coupon_id: number
+          p_created_by: string
+          p_kind: string
+          p_message: string
+          p_min_spent: number
+          p_store_id: number
+          p_subject: string
+          p_top_n: number
+        }
+        Returns: number
       }
       expire_pending_orders: {
         Args: { p_minutes?: number; p_transfer_minutes?: number }
@@ -1376,6 +1776,15 @@ export type Database = {
           p_on_date: string
           p_ranges?: Json
           p_store_id: number
+        }
+        Returns: undefined
+      }
+      settle_campaign_recipient: {
+        Args: {
+          p_error?: string
+          p_ok: boolean
+          p_provider_ref?: string
+          p_recipient_id: number
         }
         Returns: undefined
       }
@@ -1402,6 +1811,7 @@ export type Database = {
         Returns: Json
       }
       store_couriers: { Args: { p_store_id: number }; Returns: Json }
+      store_customer_directory: { Args: { p_store_id: number }; Returns: Json }
       store_dashboard: {
         Args: { p_days?: number; p_store_id: number }
         Returns: Json

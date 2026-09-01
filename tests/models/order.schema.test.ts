@@ -147,6 +147,52 @@ describe('createOrderSchema — el total lo pone siempre el servidor', () => {
       expect(createOrderSchema.safeParse(omit(validOrderInput(), 'customerEmail')).success).toBe(true)
     })
   })
+
+  describe('couponCode — normaliza a mayúsculas, y el string vacío NO se transforma a undefined (decisión deliberada)', () => {
+    it('se normaliza a mayúsculas y sin espacios — un "descuento10" en minúscula tiene que matchear coupons.code', () => {
+      const result = createOrderSchema.safeParse({ ...validOrderInput(), couponCode: ' descuento10 ' })
+      expect(result.success).toBe(true)
+      if (result.success) expect(result.data.couponCode).toBe('DESCUENTO10')
+    })
+
+    it('omitir el campo es válido: couponCode queda undefined', () => {
+      const result = createOrderSchema.safeParse(validOrderInput())
+      expect(result.success).toBe(true)
+      if (result.success) expect(result.data.couponCode).toBeUndefined()
+    })
+
+    /**
+     * A diferencia de `customerEmail`, acá el string vacío NO se transforma a
+     * `undefined` — es una decisión deliberada documentada en
+     * `order.schema.ts` (agregar el transform infla la inferencia del
+     * `.strict().superRefine(...)` y rompe el tipo de `CreateOrderInput` en
+     * cualquier archivo que lo importe). Pinnearlo acá: un '' es falsy en
+     * todos los `if (parsed.couponCode)` de `order.model.ts`/
+     * `checkout.controller.ts`, así que en la práctica se comporta igual que
+     * `undefined` sin necesitar el transform.
+     */
+    it('el string vacío pasa TAL CUAL (no se transforma a undefined) — sigue siendo válido porque es falsy en los call sites', () => {
+      const result = createOrderSchema.safeParse({ ...validOrderInput(), couponCode: '' })
+      expect(result.success).toBe(true)
+      if (result.success) expect(result.data.couponCode).toBe('')
+    })
+
+    it('un código de más de 16 caracteres es rechazado — coupons_code_check tiene el mismo tope', () => {
+      const result = createOrderSchema.safeParse({ ...validOrderInput(), couponCode: 'A'.repeat(17) })
+      expect(result.success).toBe(false)
+    })
+
+    it('un código de exactamente 16 caracteres es válido (el borde, no "cómodamente adentro")', () => {
+      const result = createOrderSchema.safeParse({ ...validOrderInput(), couponCode: 'A'.repeat(16) })
+      expect(result.success).toBe(true)
+    })
+  })
+
+  it('.strict(): un pedido que manda discountCents es rechazado, no un 200 que lo descarta en silencio — el precio y el descuento los pone siempre el servidor', () => {
+    const result = createOrderSchema.safeParse({ ...validOrderInput(), discountCents: 100 })
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result.error?.issues)).toMatch(/unrecognized_keys|discountCents/i)
+  })
 })
 
 describe('phoneSchema — la puerta al WhatsApp: si normaliza mal, el aviso no llega', () => {

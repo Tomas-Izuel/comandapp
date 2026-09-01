@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { z } from 'zod'
-import { cartItemSchema, createOrderSchema, type CreateOrderInput } from '@/models/schemas/order.schema'
+import { cartItemSchema, createOrderSchema, paymentMethodSchema, type CreateOrderInput } from '@/models/schemas/order.schema'
 import { priceCartForStore, submitOrder } from '@/controllers/checkout.controller'
 import { RateLimitError, toApiError, zodToApiError } from '@/lib/errors'
 import { consumeRateLimit } from '@/models/rate-limit.model'
@@ -22,7 +22,22 @@ import { log } from '@/lib/log'
 const previewQuerySchema = z.object({
   storeSlug: z.string().trim().min(1),
   items: z.string().trim().min(1),
+  // Default 'online': un carrito recién armado (o un frontend que todavía no
+  // manda el parámetro) tiene que poder cotizar igual, con el mismo default
+  // que `createOrderSchema.paymentMethod`.
+  paymentMethod: paymentMethodSchema.default('online'),
+  couponCode: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .max(16)
+    .optional()
+    .transform((v) => (v === '' ? undefined : v)),
 })
+
+function clientIp(request: Request): string {
+  return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+}
 
 // ---------------------------------------------------------------------------
 // Rate limit del camino de compra — Postgres vía `consumeRateLimit`
@@ -119,6 +134,8 @@ export async function GET(request: NextRequest) {
   const parsedQuery = previewQuerySchema.safeParse({
     storeSlug: request.nextUrl.searchParams.get('storeSlug'),
     items: request.nextUrl.searchParams.get('items'),
+    paymentMethod: request.nextUrl.searchParams.get('paymentMethod') ?? undefined,
+    couponCode: request.nextUrl.searchParams.get('couponCode') ?? undefined,
   })
   if (!parsedQuery.success) {
     return NextResponse.json({ error: 'Faltan datos para calcular el precio' }, { status: 400 })
@@ -137,7 +154,35 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const { store, priced, eta, delivery, fullNights } = await priceCartForStore(parsedQuery.data.storeSlug, parsedItems.data)
+    const quote = await priceCartForStore(parsedQuery.data.storeSlug, parsedItems.data, {
+      couponCode: parsedQuery.data.couponCode,
+      paymentMethod: parsedQuery.data.paymentMethod,
+    })
+
+    // El balde `coupon_check:ip` (§5.13) se consume SOLO cuando el código NO
+    // EXISTE — nunca en una cotización sin cupón, ni con uno que existe (aunque
+    // esté vencido, pausado o no aplique): la cotización dispara con CADA
+    // cambio de carrito y sin debounce (`use-priced-cart.ts`), así que cobrar
+    // cada intento con cupón rate-limitearía a un cliente de su propio
+    // checkout a los 30 toques del "+". Enumerar códigos inexistentes SÍ es la
+    // única señal que un sondeo produce y un cliente legítimo no.
+    if (quote.couponCodeMissing) {
+      const policy = RATE_LIMIT_POLICY['coupon_check:ip']
+      const decision = await consumeRateLimit({
+        bucket: 'coupon_check:ip',
+        subject: clientIp(request),
+        limit: policy.limit,
+        windowSeconds: policy.windowSeconds,
+      })
+      if (!decision.allowed) {
+        throw new RateLimitError(
+          'Estás probando muchos códigos de cupón. Esperá un momento y volvé a intentar.',
+          decision.retryAfterSeconds,
+        )
+      }
+    }
+
+    const { store, priced, eta, delivery, fullNights } = quote
     return NextResponse.json({
       store: {
         slug: store.slug,
@@ -157,8 +202,8 @@ export async function GET(request: NextRequest) {
       fullNights,
     })
   } catch (err) {
-    const { body, status } = toApiError(err, 'GET /api/orders')
-    return NextResponse.json(body, { status })
+    const { body, status, headers } = toApiError(err, 'GET /api/orders')
+    return NextResponse.json(body, { status, headers })
   }
 }
 

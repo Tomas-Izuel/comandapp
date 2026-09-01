@@ -2,7 +2,8 @@
 
 import * as React from 'react'
 import { type CartLine, lineKey } from '@/lib/cart'
-import type { DeliveryQuote } from '@/models/types'
+import type { CouponAppliedQuote, DeliveryQuote } from '@/models/types'
+import type { PaymentMethod } from '@/models/schemas/order.schema'
 
 /**
  * El precio SIEMPRE sale del servidor (`priceCart` en order.model.ts, vía
@@ -31,7 +32,16 @@ type PreviewOk = {
     onlinePaymentEnabled: boolean
     minOrderCents: number
   }
-  priced: { items: PricedItemQuote[]; subtotalCents: number; totalCents: number; basePrepMinutes: number }
+  priced: {
+    items: PricedItemQuote[]
+    subtotalCents: number
+    totalCents: number
+    basePrepMinutes: number
+    /** 0 sin cupón o con uno rechazado. Ya clampeado al subtotal — la vista nunca lo recalcula. */
+    discountCents: number
+    /** `null` si no se mandó código. El rechazo viaja como dato, nunca como excepción (§5.9.1). */
+    coupon: CouponAppliedQuote | null
+  }
   eta: { baseMinutes: number; multiplier: number; etaMinutes: number; activeOrders: number; isBusy: boolean }
   /**
    * Todo lo que hace falta para pintar la elección retiro/delivery, ya
@@ -49,8 +59,15 @@ type PreviewOk = {
   fullNights?: string[]
 }
 
-async function fetchPreview(storeSlug: string, items: unknown[], signal: AbortSignal): Promise<PreviewOk> {
+async function fetchPreview(
+  storeSlug: string,
+  items: unknown[],
+  signal: AbortSignal,
+  opts?: { paymentMethod?: PaymentMethod; couponCode?: string | null },
+): Promise<PreviewOk> {
   const params = new URLSearchParams({ storeSlug, items: JSON.stringify(items) })
+  if (opts?.paymentMethod) params.set('paymentMethod', opts.paymentMethod)
+  if (opts?.couponCode) params.set('couponCode', opts.couponCode)
   const res = await fetch(`/api/orders?${params.toString()}`, { signal })
   const body = (await res.json()) as PreviewOk & { error?: string }
   if (!res.ok) throw new Error(body.error ?? 'No se pudo calcular el precio')
@@ -198,9 +215,21 @@ export type CheckoutQuote =
  * para todo el carrito (a diferencia de `usePricedLines`, que hasta A-03 pedía
  * línea por línea) — la elección retiro/delivery no dispara un segundo fetch,
  * `delivery` viaja en la misma respuesta.
+ *
+ * `opts.paymentMethod`/`opts.couponCode` viajan en la misma request y ya
+ * disparan una recotización cuando cambian — no hace falta un fetch aparte
+ * para el cupón. Sin debounce: el `AbortController` de acá es el mecanismo, y
+ * el balde `coupon_check:ip` se cobra solo cuando el código no existe,
+ * justamente para no necesitarlo (00-architecture.md §5.9.4, §5.13).
  */
-export function useCheckoutQuote(storeSlug: string, lines: CartLine[]): CheckoutQuote {
+export function useCheckoutQuote(
+  storeSlug: string,
+  lines: CartLine[],
+  opts?: { paymentMethod?: PaymentMethod; couponCode?: string | null },
+): CheckoutQuote {
   const linesKey = JSON.stringify(lines)
+  const paymentMethod = opts?.paymentMethod
+  const couponCode = opts?.couponCode ?? null
   const [quote, setQuote] = React.useState<CheckoutQuote>({ status: 'loading' })
 
   React.useEffect(() => {
@@ -214,7 +243,7 @@ export function useCheckoutQuote(storeSlug: string, lines: CartLine[]): Checkout
     const controller = new AbortController()
     setQuote({ status: 'loading' })
 
-    fetchPreview(storeSlug, currentLines.map(toApiItem), controller.signal)
+    fetchPreview(storeSlug, currentLines.map(toApiItem), controller.signal, { paymentMethod, couponCode })
       .then((data) => {
         // Mismo motivo que en `usePricedLines`: abortar el controller no
         // garantiza que esta promesa ya rechazada — una respuesta vieja que
@@ -231,7 +260,7 @@ export function useCheckoutQuote(storeSlug: string, lines: CartLine[]): Checkout
       })
 
     return () => controller.abort()
-  }, [storeSlug, linesKey])
+  }, [storeSlug, linesKey, paymentMethod, couponCode])
 
   return quote
 }

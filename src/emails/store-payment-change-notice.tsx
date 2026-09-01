@@ -12,8 +12,9 @@ export type StorePaymentChangeNoticeVars = {
 }
 
 /**
- * Aviso de que ALGUIEN pidió cambiar la configuración de pagos. Va sin código,
- * a la misma casilla del dueño.
+ * Aviso de que ALGUIEN pidió un cambio sensible (plata, o exposición de
+ * plata: activar un cupón entra en la misma categoría — §5.11.3 del plan de
+ * cupones). Va sin código, a la misma casilla del dueño.
  *
  * Es lo que convierte el mecanismo de un candado en una alarma. El código solo
  * frena el cambio; este mail es lo que hace que el dueño se entere de que
@@ -23,20 +24,24 @@ export type StorePaymentChangeNoticeVars = {
  * Por eso son dos mails y no un párrafo más en el otro: el del código se
  * escribe para quien está haciendo el cambio, y este para quien no lo está
  * haciendo.
+ *
+ * **Copy genérico a propósito**, mismo criterio que `store-payment-change-code`:
+ * `changeLabel` nombra el cambio puntual, el resto del texto no puede asumir
+ * que es sobre pagos.
  */
 export default function StorePaymentChangeNoticeEmail(props: StorePaymentChangeNoticeVars) {
   const { storeName, changeLabel, requestedByEmail, requestedAtLabel } = props
 
   return (
     <EmailDocument
-      title={`Movimiento en los pagos de ${storeName}`}
+      title={`Un cambio pedido en ${storeName}`}
       previewText={`Alguien pidió cambiar ${changeLabel} en ${storeName}.`}
     >
       <StoreBand storeName={storeName} />
 
       <Section style={{ padding: '28px 28px 0' }}>
         <Heading as="h1" style={{ margin: 0, fontSize: 22, lineHeight: '1.2', color: palette.ink, fontWeight: 800 }}>
-          Alguien pidió cambiar tus pagos
+          Alguien pidió hacer un cambio
         </Heading>
         <Text style={{ margin: '12px 0 0', fontSize: 14, lineHeight: '1.55', color: palette.body }}>
           {`Se pidió cambiar ${changeLabel} en ${storeName}. El cambio NO se aplicó: necesita el código que te mandamos en un mail aparte.`}
@@ -58,12 +63,12 @@ export default function StorePaymentChangeNoticeEmail(props: StorePaymentChangeN
         </Text>
         <Text style={{ margin: '10px 0 0', fontSize: 13, lineHeight: '1.55', color: palette.body }}>
           <strong style={{ color: palette.ink }}>Si no fuiste vos</strong>, alguien tiene acceso al panel de tu local.
-          Cerrá la sesión en los dispositivos del local y escribinos: mientras no uses el código, la plata sigue
-          entrando a tu cuenta de siempre.
+          Cerrá la sesión en los dispositivos del local y escribinos: mientras no confirmes con el código, nada
+          cambia.
         </Text>
       </Section>
 
-      <Footer>Este aviso sale cada vez que se pide un cambio en los pagos, se complete o no.</Footer>
+      <Footer>Este aviso sale cada vez que se pide un cambio sensible, se complete o no.</Footer>
     </EmailDocument>
   )
 }

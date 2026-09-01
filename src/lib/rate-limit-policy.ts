@@ -85,4 +85,40 @@ export const RATE_LIMIT_POLICY: Record<RateLimitBucket, { limit: number; windowS
   // varios clientes reales compartan IP de salida, y acá el falso positivo le
   // cae a alguien que ya pagó.
   'receipt:ip': { limit: 20, windowSeconds: 60 * 60 },
+
+  // --- Baja de promociones ------------------------------------------------
+  //
+  // `/baja/[token]` es público y recibe tokens, o sea superficie de sondeo: sin
+  // límite, alguien puede caminar el espacio de tokens buscando uno válido.
+  // Laxo igual, y por el mismo motivo que `receipt:ip`: es un link que llega
+  // por mail y se abre desde el celular, así que varios clientes reales
+  // comparten IP de salida. Y el peor caso de dejar pasar uno de más es que
+  // alguien dé de baja a un tercero cuyo token ya conocía — molesto, no grave,
+  // y reversible desde el panel.
+  'unsubscribe:ip': { limit: 30, windowSeconds: 60 * 60 },
+
+  // --- Cupones y campañas --------------------------------------------------
+  //
+  // `coupon_create:store` en 20/1h y no en 3/1h como `payment_change:store`:
+  // una credencial de cobro se cambia una vez al año, pero CREAR CUPONES ES
+  // TRABAJO NORMAL y un tope de 3 haría inusable una tarde de armar
+  // promociones.
+  'coupon_create:store': { limit: 20, windowSeconds: 60 * 60 },
+  // Los del segundo factor. El diario existe porque 10/hora × 24 son 240 mails
+  // teóricos, muy por encima de lo que el cupo del proyecto tolera. El REENVÍO
+  // de código consume estos mismos baldes, que es donde el tope por hora
+  // realmente hace falta.
+  'coupon_change:store': { limit: 10, windowSeconds: 60 * 60 },
+  'coupon_change:store:day': { limit: 20, windowSeconds: 24 * 60 * 60 },
+  // Tres campañas por día y por tienda. Con el cupo de 15 mails diarios, una
+  // cuarta no tendría con qué mandarse.
+  'campaign_send:store': { limit: 3, windowSeconds: 24 * 60 * 60 },
+  // Calcados de `support:store`, con el diario más ajustado (10 → 5): pedir más
+  // volumen cinco veces en un día ya es mucho.
+  'campaign_quota:store': { limit: 1, windowSeconds: 2 * 60 },
+  'campaign_quota:store:day': { limit: 5, windowSeconds: 24 * 60 * 60 },
+  // Laxo por el CGNAT móvil, igual que `receipt:ip` y `unsubscribe:ip`. Se
+  // consume solo cuando el código no existe, así que 30 fallos en 10 minutos ya
+  // no es alguien tipeando mal.
+  'coupon_check:ip': { limit: 30, windowSeconds: 10 * 60 },
 }

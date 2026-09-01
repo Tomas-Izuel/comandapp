@@ -62,6 +62,28 @@ export function scaleUpInt(value: number, factor: number): number {
   return Math.ceil((value * basisPoints) / 10_000)
 }
 
+/**
+ * Porcentaje entero de un monto en centavos, redondeando SIEMPRE PARA ABAJO.
+ *
+ * `scaleUpInt()` NO sirve para esto y la diferencia es plata: hace `Math.ceil`,
+ * que está bien para un ETA —redondear un minuto para arriba es honesto— y mal
+ * para un descuento, porque redondear el regalo para arriba lo paga el local.
+ *
+ * La MISMA fórmula vive en SQL, adentro de `public.create_order`, como
+ * `(subtotal * percent) / 100` con división entera. Están escritas dos veces a
+ * propósito, igual que `ALLOWED_TRANSITIONS`: ésta muestra el número antes de
+ * comprar, la de Postgres es la que cobra y rechaza al llamador si no
+ * coinciden. Hay un test de paridad, y no es decorativo: con subtotal 833333 y
+ * 15%, el valor exacto es 124999.95 → 124999 acá y 124999 allá; un `ceil`
+ * devolvería 125000 y `create_order` respondería CPN09.
+ *
+ * `percent` se espera entero de 1 a 100 (`coupons_shape_check` lo garantiza en
+ * la base). Se opera con enteros y se divide una sola vez.
+ */
+export function percentOfCentsDown(cents: number, percent: number): number {
+  return Math.floor((assertCents(cents) * Math.trunc(percent)) / 100)
+}
+
 export function sumCents(values: number[]): number {
   return values.reduce((total, value) => total + assertCents(value), 0)
 }

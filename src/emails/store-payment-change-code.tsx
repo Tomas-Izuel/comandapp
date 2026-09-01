@@ -10,7 +10,8 @@ export type StorePaymentChangeCodeVars = {
 }
 
 /**
- * Código para confirmar un cambio que toca plata.
+ * Código para confirmar un cambio sensible (plata, o exposición de plata:
+ * activar un cupón entra en la misma categoría — §5.11.3 del plan de cupones).
  *
  * Usa `ShortCodeBlock` —la misma pieza con la que el cliente lee el código de
  * su pedido— y no un bloque propio: es exactamente el mismo trabajo visual
@@ -20,6 +21,11 @@ export type StorePaymentChangeCodeVars = {
  * Sin botón ni link a propósito. Un mail de confirmación que trae su propio
  * link es un mail que, reenviado o filtrado, ES la llave. Acá el código no
  * sirve sin la sesión abierta en el formulario que lo pidió.
+ *
+ * **Copy genérico a propósito.** `changeLabel` ya dice QUÉ se está cambiando
+ * ("la cuenta de Mercado Pago...", "un cupón de descuento"), así que el resto
+ * del texto no puede asumir que es sobre pagos: un cupón no es plata que entra
+ * o sale de una cuenta.
  */
 export default function StorePaymentChangeCodeEmail(props: StorePaymentChangeCodeVars) {
   const { storeName, code, changeLabel } = props
@@ -27,13 +33,13 @@ export default function StorePaymentChangeCodeEmail(props: StorePaymentChangeCod
   return (
     <EmailDocument
       title={`Tu código para ${storeName}`}
-      previewText={`Código ${code} para confirmar un cambio en los pagos de ${storeName}.`}
+      previewText={`Código ${code} para confirmar un cambio en ${storeName}.`}
     >
       <StoreBand storeName={storeName} />
 
       <Section style={{ padding: '28px 28px 0' }}>
         <Heading as="h1" style={{ margin: 0, fontSize: 22, lineHeight: '1.2', color: palette.ink, fontWeight: 800 }}>
-          Confirmá el cambio en tus pagos
+          Confirmá este cambio
         </Heading>
         <Text style={{ margin: '12px 0 0', fontSize: 14, lineHeight: '1.55', color: palette.body }}>
           {`Pediste cambiar ${changeLabel} en ${storeName}. Escribí este código en la pantalla donde lo pediste para que el cambio se aplique.`}
