@@ -671,3 +671,105 @@ describe('createOrder — pedido programado: validaciones del servidor', () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// HALLAZGO — ver docs/pipelines/2026-08-31-clientes-y-cupones/03-review.md,
+// "Hallazgo 1 — BLOQUEANTE". No es un test propio mal escrito: reproduce un
+// bug real de `src/models/order.model.ts:790-806` y por eso queda FALLANDO a
+// propósito. No se toca `src/` para arreglarlo (ver reglas del pipeline).
+// ---------------------------------------------------------------------------
+
+function couponRowFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 900,
+    store_id: STORE_ID,
+    name: 'Un cliente, un descuento',
+    code: 'DESCUENTO1',
+    discount_type: 'percentage',
+    percent: 10,
+    amount_off_cents: null,
+    max_discount_cents: null,
+    min_subtotal_cents: 0,
+    starts_at: null,
+    ends_at: null,
+    max_redemptions: 100,
+    max_redemptions_per_phone: 1,
+    reserved_count: 1,
+    redeemed_count: 0,
+    payment_methods: null,
+    status: 'active',
+    created_by: null,
+    created_at: '2026-08-31T00:00:00Z',
+    updated_at: '2026-08-31T00:00:00Z',
+    ...overrides,
+  }
+}
+
+/**
+ * `resolveCoupon`/`validateCouponForCart` (`coupon.model.ts`) hablan con el
+ * MISMO admin client que el resto de `createOrder`, así que hace falta
+ * extender `buildAdminMock` con `coupons` y `coupon_redemptions` en vez de
+ * armar un mock aparte — es la única forma de ejercitar el flujo completo tal
+ * como corre en producción.
+ */
+function withCouponTables(
+  base: ReturnType<typeof buildAdminMock>,
+  opts: { couponRow: Record<string, unknown>; phoneUsedCount: number },
+): ReturnType<typeof buildAdminMock> {
+  const extended = {
+    ...base,
+    from: (table: string) => {
+      if (table === 'coupons') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({ data: opts.couponRow, error: null }),
+              }),
+            }),
+          }),
+        }
+      }
+      if (table === 'coupon_redemptions') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                in: async () => ({ count: opts.phoneUsedCount, error: null }),
+              }),
+            }),
+          }),
+        }
+      }
+      return base.from(table)
+    },
+  }
+  // El mock real devuelve una forma distinta por tabla (`coupons`,
+  // `coupon_redemptions`) que `buildAdminMock` no conoce: es deliberadamente
+  // más ancho que su tipo declarado, así que el cast es hacia la forma que
+  // `createOrder` realmente consume, no un `any` para saltear el chequeo.
+  return extended as unknown as ReturnType<typeof buildAdminMock>
+}
+
+describe('createOrder — HALLAZGO: un reintento idempotente con el tope por teléfono del cupón ya consumido por el PROPIO primer intento', () => {
+  it('debería devolver el pedido ya creado (como hace la RPC create_order, cuya idempotencia corre ANTES de tocar el cupón) — en cambio tira "Ya usaste ese cupón." sin llamar nunca a la RPC', async () => {
+    // Escenario: primer intento con este mismo `idempotencyKey` ya reservó el
+    // cupón para este teléfono (max_redemptions_per_phone: 1, ya hay 1 reserva
+    // viva) y creó el pedido. La respuesta se perdió (mala señal — el caso
+    // normal que la idempotencia existe para cubrir) y el cliente reintenta
+    // con la MISMA clave.
+    const base = buildAdminMock({ storeRow: storeRowFixture({ online_payment_enabled: true }) })
+    currentAdminMock = withCouponTables(base, {
+      couponRow: couponRowFixture(),
+      phoneUsedCount: 1, // === max_redemptions_per_phone: el tope ya está en el límite
+    })
+
+    // Comportamiento CORRECTO: `create_order` resuelve la idempotencia como
+    // su primera operación (línea 903 de la migración), antes de tocar un
+    // solo cupón — así que un reintento legítimo tendría que llegar a la RPC
+    // y recibir el pedido ya existente (acá, el `555` que ya usa el resto de
+    // este archivo como fixture de "la RPC devolvió un pedido").
+    const result = await createOrder(orderInput({ paymentMethod: 'online', couponCode: 'descuento1' }))
+    expect(result.order.id).toBe(555)
+  })
+})

@@ -1,436 +1,305 @@
-# Code review — Entrega A (Clientes)
+# Code review — Entrega B (Cupones y campañas)
 
-Rama `feat/clientes-y-cupones` contra `main` (todo el slice está sin commitear
-todavía: `git status` muestra los archivos de T0A/T1A/T2A/T3A como
-modificados/untracked, no hay commits nuevos sobre `main`).
+Rama `feat/cupones-y-campanas` contra `feat/clientes-y-cupones` (Entrega A, ya
+mergeada como PR #8). Migración de 2197 líneas, modelos y controllers de
+cupones/campañas/pedido, vistas de `/admin/clientes/cupones`, checkout y
+seguimiento del cliente, superficies operativas (KDS, historial, repartidor),
+circuito de mail/cron, y la suite de `test-engineer`.
 
 ## Veredicto: **PASA**
 
-*(Actualizado tras el fix del hilo principal sobre el Hallazgo 1 — ver
-"Re-verificación" más abajo. El resto de este documento, salvo esa sección y
-esta cabecera, queda tal como se escribió en la primera pasada.)*
+Segunda vuelta, sobre el estado actual del código (no sobre el que se revisó
+la primera vez). Los 13 hallazgos de la primera pasada —el bloqueante y los
+doce mayores/menores— están resueltos. Los verifiqué contra el código, no
+contra el mensaje del coordinador, con una mezcla de lectura directa y
+verificación en ejecución:
 
-El bloqueante que impedía commitear (§Hallazgo 1, `display_name` sin filtrar
-por facturable) está corregido en la migración con un `coalesce` de tres
-ramas, lo revisé de nuevo específicamente y cierra el hallazgo sin abrir uno
-nuevo. No quedan bloqueantes. Quedan cuatro ítems de deuda anotada, no
-bloqueantes, listados en "Los tres puntos pedidos, dictaminados" y en el nuevo
-punto 4 de esa sección (metadata de tabs del panel).
+- **`typecheck`, `lint` y `npm test` en verde**, corridos por mí de forma
+  independiente (dos veces, para descartar flakiness): `99 archivos, 1289
+  tests, 0 fallas, 4 skips` en ambas corridas, con Docker arriba y la
+  migración aplicada por `db:reset` (confirmé los cuatro triggers del modelo
+  de reserva presentes y habilitados en la base: `coupon_redemptions_enforce`,
+  `coupon_redemptions_sync_counters`, `orders_enforce_rules`,
+  `orders_sync_coupon_reservation`).
+- **El bloqueante (1) lo reproduje en vivo contra el servidor real**, no solo
+  leyendo el diff: creé un cupón de prueba
+  (`max_redemptions_per_phone = 1`, el default) y repetí exactamente la tabla
+  que reportó el coordinador —
 
-## Alcance revisado
+  | Caso | Resultado observado |
+  |---|---|
+  | 3× `POST /api/orders` con la misma `idempotencyKey`, cupón con tope por teléfono en 1 | `201` las tres veces, mismo `token`/`shortCode`; en la base: **1 pedido, 1 fila de libro mayor, `reserved_count = 1`** |
+  | Pedido nuevo (otra clave), mismo teléfono, mismo cupón | `400 "Ya usaste ese cupón."` — el tope sigue mordiendo |
+  | Pedido nuevo, otro teléfono | `201` |
+  | Cupón inventado | `"Ese código no existe o ya no está disponible."` |
+  | Cupón pausado | el mismo mensaje — la anti-enumeración sigue en pie |
 
-`git status --short`:
+  Limpié el cupón y los pedidos de prueba al terminar; `npm test` corrido de
+  nuevo después de la limpieza sigue en verde.
+- **Los hallazgos 2 y 13** (concurrencia y schema, los que más fácil se
+  arreglan a medias) los revisé con más cuidado, tal como se me pidió: el
+  `perform ... for update` está presente **en los tres lugares** que
+  recalculan contadores bajo un `UPDATE ... FROM` (`sync_coupon_counters`,
+  el bloque de limpieza de `claim_campaign_recipients`, y
+  `settle_campaign_recipient`), y **ningún camino de cierre de campaña** deja
+  `status = 'sent'` con cero envíos: conté cuatro sitios que cierran una
+  campaña (el bloque de limpieza al principio de `claim_campaign_recipients`,
+  el camino de "no hay chunk reclamable" agregado para el caso de baja masiva
+  entre encolar y drenar, y `settle_campaign_recipient`) y los cuatro usan
+  `else 'stopped'` con `stopped_reason = 'no_recipients'`, nunca `'sent'`.
 
-```
- M src/app/legal/privacidad/page.tsx
- M src/app/legal/terminos/page.tsx
- M src/lib/rate-limit-policy.ts
- M src/lib/supabase/database.types.ts
- M src/models/schemas/platform.schema.ts
- M src/models/types.ts
- M src/views/admin/shell.tsx
-?? src/app/admin/(app)/clientes/
-?? src/app/baja/
-?? src/controllers/customers.actions.ts
-?? src/controllers/customers.controller.ts
-?? src/controllers/unsubscribe.actions.ts
-?? src/models/customer.model.ts
-?? src/models/schemas/customer.schema.ts
-?? src/views/admin/clientes/
-?? src/views/unsubscribe/
-?? supabase/migrations/20260901120000_clientes.sql
-```
-
-11 archivos nuevos + 7 modificados, ~850 líneas nuevas contando la migración.
-Leí el diff completo (no solo el stat), el código final de cada archivo nuevo,
-`00-architecture.md` (§5.1 a §5.12), `01-tasks.md` (T0A–T3A), los tres
-`02-development-*.md`, y crucé contra `CLAUDE.md`/`PRODUCT.md`. Corrí las
-skills `supabase-postgres-best-practices`, `supabase`, `impeccable`
-(`craft-floor.md`) y `web-design-guidelines` como lentes de auditoría.
-
----
-
-## Hallazgos
-
-### 1. [RESUELTO — ver re-verificación] `display_name` no filtraba por "facturable": contradecía §5.2 y el criterio de aceptación T1A #4
-
-> **Estado: corregido y re-verificado.** Ver "Re-verificación del Hallazgo 1"
-> al final de este documento. Se deja el hallazgo original completo abajo
-> porque documenta el escenario de falla y sigue siendo la referencia para
-> entender por qué el `coalesce` de tres ramas tiene esa forma.
-
-**`supabase/migrations/20260901120000_clientes.sql:169` (estado original, ya corregido)**
-
-```sql
-coalesce((array_agg(o.customer_name order by o.created_at desc))[1], ''),
-```
-
-`private.recalc_store_customer` recalcula `display_name` tomando el
-`customer_name` del pedido **más reciente por `created_at`, sin filtrar por
-`order_is_customer_spend`**. Pero `orders_count`, `total_spent_cents`,
-`cancelled_orders_count`, `first_order_at` y `last_order_at` sí llevan el
-filtro `filter (where private.order_is_customer_spend(...))`. Es una
-inconsistencia dentro de la misma sentencia: unas columnas del mismo `select`
-respetan el predicado de "plata gastada" y una no.
-
-Esto contradice `00-architecture.md` §5.2 de forma literal — la tabla de los
-"tres conflictos resueltos" dice explícitamente: *"Mismo teléfono, dos
-nombres → `display_name` = el nombre del **pedido facturable más
-reciente**."* — y el criterio de aceptación T1A #4 en `01-tasks.md`: *"Dos
-pedidos del mismo teléfono con nombres distintos → una sola fila,
-`display_name` = el del pedido **facturable** más reciente."*
-
-**Escenario concreto de falla:** un cliente hace un pedido pagado en el local
-como "Juan Pérez" (facturable). Al día siguiente arranca un pedido online,
-tipea apurado "juan" (sin apellido) y lo abandona sin pagar (`pending`, no
-facturable). El `INSERT` de ese segundo pedido dispara igual el trigger
-(`AFTER INSERT ... FOR EACH ROW`, sin condición de estado), y como el
-`array_agg` que arma `display_name` no filtra por facturable, el padrón pasa a
-mostrar "juan" al dueño — un cliente que le pagó $8.000 aparece con el nombre
-mal tipeado de un pedido que nunca se cobró. Peor: `buildCustomerWhatsappMessage`
-(T2A) usa `firstToken(displayName)` para armar el saludo de reactivación, así
-que el mensaje de WhatsApp le queda "¡Hola juan!" en minúscula a un cliente que
-sí se identificó bien la primera vez.
-
-**Ya confirmado por un test independiente:** `test-engineer` escribió
-`tests/db/store-customers.test.ts:108` ("`display_name` toma el nombre del
-pedido FACTURABLE más reciente...") con la expectativa correcta y dejó el
-comentario *"HALLAZGO ... hoy esto da 'Pedro' en vez de 'Juan'"* — coincide
-exactamente con lo que encontré leyendo la migración, así que no es una lectura
-aislada mía.
-
-**Arreglo sugerido (no lo implemento, es una migración y ese archivo es del
-hilo principal):** el `array_agg(o.customer_name order by o.created_at desc)`
-necesita el mismo `filter (where private.order_is_customer_spend(...))` que ya
-llevan las demás columnas, con un fallback al agregado sin filtrar solo para
-el caso "cero pedidos facturables todavía" (que es el único caso legítimo para
-mostrar el nombre de un pedido no facturable — está cubierto por el `email` de
-la misma fila, que si no tiene filtro es porque el plan tampoco lo pide para
-`email`, ver Hallazgo 2 más abajo por qué esa asimetría sí es correcta).
+No quedan bloqueantes. El resto de esta nota es el detalle de cada hallazgo,
+para que quede escrito qué se verificó y cómo.
 
 ---
 
-### 2. [Sin acción de código — nit informativo] La asimetría `display_name` vs. `email` en el plan es real, no un descuido
+## Estado de los 13 hallazgos de la primera vuelta
 
-Aclaración para quien arregle el Hallazgo 1: `email` **no** lleva el filtro de
-facturable en `recalc_store_customer` (`coalesce((array_agg(o.customer_email
-order by o.created_at desc) filter (where o.customer_email is not null))[1],
-...)`), y eso está bien — §5.2 solo dice *"email = el último mail no nulo
-visto"*, sin condición de facturable. No confundir las dos columnas al
-corregir el Hallazgo 1: solo `display_name` necesita el filtro nuevo.
+### 1 — BLOQUEANTE (RESUELTO) — Idempotencia rota por la validación de cupón antes del RPC
 
----
+**Arreglo aplicado:** se sacó el `throw` temprano de `createOrder`
+(`src/models/order.model.ts`, bloque `[CUPON]`). Ya no se corta el pedido en
+TypeScript cuando `resolveCoupon` rechaza el código — `discountCents` sale en
+`0` y el flujo sigue hasta la RPC, que es la única autoridad: resuelve la
+idempotencia primero (antes de tocar un cupón) y, si el pedido es
+genuinamente nuevo con un código inválido, la propia validación de
+`create_order` (dentro del bloque `if v_code is not null`) rechaza con el
+`CPN0x` correspondiente, que `order.model.ts` sigue traduciendo a
+`DomainError` exactamente como antes. La variante elegida es la que yo
+mismo había ofrecido como "alternativa más simple" en la primera pasada.
 
-### 3. [Mayor — decisión pedida explícitamente] "Tus derechos" en `/legal/privacidad` queda en tensión con "el padrón no se borra nunca"
+**Verificado:**
+- Lectura del código actual: el `if (parsed.couponCode) { ... }` ya no tiene
+  ningún `throw` dependiente de `resolution.quote?.status`.
+- Reproducción en vivo contra el servidor corriendo (tabla arriba): tres
+  reintentos con la misma clave y un cupón de tope por teléfono en 1 devuelven
+  `201` los tres, un solo pedido y una sola reserva en la base — el escenario
+  exacto del hallazgo original ya no ocurre.
+- El tope por teléfono y la anti-enumeración ("no existe" = "pausado") siguen
+  funcionando para pedidos genuinamente nuevos, así que el arreglo no abrió
+  un agujero de validación al sacar el corte temprano.
 
-**`src/app/legal/privacidad/page.tsx:138-145`** (sección sin tocar por T3A,
-intacta desde antes de este feature):
+### 2 — MAYOR (RESUELTO) — Carrera de snapshot en los recálculos de contadores
 
-> *"Podés pedirnos acceder, corregir o borrar tus datos escribiéndonos a...
-> Esto se enmarca en la Ley 25.326."*
+**Arreglo aplicado:** `perform 1 from ... for update;` antes de CADA
+`UPDATE ... FROM (subquery)` que recalcula un contador agregando desde una
+tabla distinta, en los tres lugares que el hallazgo señalaba y que dependen
+del mismo patrón:
+- `private.sync_coupon_counters()` — lock sobre la fila de `coupons` antes de
+  recalcular `reserved_count`/`redeemed_count` desde `coupon_redemptions`.
+- El bloque de limpieza al principio de `claim_campaign_recipients` — lock
+  sobre `coupon_campaigns` (`where status in ('queued','sending')`) antes de
+  recalcular `sent_count`/`failed_count`/`skipped_count` desde
+  `campaign_recipients`.
+- `settle_campaign_recipient` — mismo lock, mismo motivo, comentado
+  explícitamente como "mismo lock que `sync_coupon_counters`".
 
-**Mi lectura, precisada:** el texto no es falso, pero después de este feature
-queda impreciso de una forma concreta y verificable, no solo "incómodo de
-honrar". La sección nueva, dos párrafos arriba (`"El padrón del local"`), dice
-que la fila *"se conserva mientras el local use la plataforma"* y no promete
-un plazo de borrado — decisión de producto correcta y bien escrita (el
-comentario del archivo la defiende con el argumento correcto: borrar la fila
-pierde la baja de marketing). Pero "borrar" en la sección de derechos, sin
-matiz, es una promesa que la implementación **no puede sostener** salvo que la
-persona directamente no vuelva a comprarle a ese local:
+**Verificado:** leí las tres funciones completas en la migración actual;
+las tres tienen la sentencia `perform ... for update` como paso previo a su
+`UPDATE`, con un comentario que explica el mecanismo de EvalPlanQual bajo
+Read Committed (correcto: una subquery sobre una tabla distinta de la que se
+actualiza usa el snapshot de inicio del statement, no uno fresco tras
+esperar el lock, así que sin el lock explícito el recálculo puede escribir
+un conteo viejo). El cuarto camino de cierre (el de "no hay chunk
+reclamable", agregado para el hallazgo 13) opera sobre `v_campaign`, cuya
+fila ya está lockeada desde su propio `select ... for update skip locked` un
+poco más arriba en la misma función — no necesita un lock adicional porque
+ya lo tiene desde antes, dentro de la misma transacción.
 
-- `display_name` y `email` del padrón **se reconstruyen enteros desde
-  `orders`** en cada evento de pedido (`private.recalc_store_customer`
-  recalcula el agregado completo, no lo incrementa). Si a mano se vaciara el
-  nombre/mail de una fila de `store_customers` para "honrar" un pedido de
-  borrado, **el próximo pedido de ese mismo teléfono los vuelve a escribir**
-  desde `orders.customer_name`/`customer_email` — que en sí mismos no se
-  tocan ni se pueden tocar por este mecanismo. No es que sea trabajoso honrar
-  el pedido de borrado: es que la fila **no se sostiene borrada** si la
-  persona sigue siendo cliente. La arquitectura ya llega a esta misma
-  conclusión en otro lugar (§5.3.3: *"la próxima compra la recrearía
-  limpia"*) — acá se aplica a un derecho que el texto legal promete sin esa
-  salvedad.
-- El verdadero registro (`orders.customer_name/phone/email`, uno por pedido)
-  no tiene ningún mecanismo de borrado ni antes ni después de este feature:
-  es el historial contable del local, y de ahí es de donde el padrón se
-  reconstruye.
+### 3 — MAYOR (RESUELTO) — Comentarios que prometían una revalidación con `z.email()` que no existía
 
-**Decisión:** el texto **no alcanza tal cual**, pero esto es algo para
-**decidir antes de anunciar el feature puertas afuera, no antes de
-commitear**. Es una sección preexistente que T3A correctamente no tocó por
-instrucción del plan (§5.12.5.1), y precisarla bien es una decisión de
-producto/legal — no algo que un dev agent deba improvisar ni algo que
-bloquee integrar Entrega A. Sugerencia concreta para esa iteración de texto,
-sin inventar un camino de autoservicio que no existe: mantener "corregir" tal
-cual (es cierto: nombre, nota y baja se pueden ajustar a mano por ese canal) y
-calificar "borrar" con la salvedad real — que el padrón de un cliente que
-sigue comprándole a ese local se reconstruye desde su historial de pedidos en
-cada compra nueva, así que un borrado ahí no es durable mientras la relación
-comercial siga activa. Es la misma honestidad que ya se aplicó en el párrafo
-de retención de esa misma sección nueva — falta extenderla a "Tus derechos".
+**Arreglo aplicado:** `src/services/notifications/email/campaign.tsx` ahora
+tiene `const campaignEmailSchema = z.email()` y filtra `rows` con ella antes
+de armar el batch — las direcciones que no pasan se asientan como fallidas
+por separado (vía `settleCampaignRecipient`) y **no** entran al hash de
+idempotencia del chunk. El comentario de
+`private.looks_like_email` en la migración, que decía "el drenaje vuelve a
+validar con Zod antes de mandar", ahora describe algo que el código
+efectivamente hace.
 
----
+**Verificado:** grep de `z.email` en `campaign.tsx` — ya no da cero
+resultados; leí el bloque completo que separa `invalidRows`/`validRows` y
+confirmé que las inválidas se descartan del batch antes de tocar Resend, así
+que una sola dirección con formato roto ya no puede tirar abajo el chunk de
+15 completo.
 
-### 4. [Menor] La tab "Cupones" en `/admin/clientes` es un link muerto mientras Entrega B no esté integrada
+### 4 — MAYOR (RESUELTO) — `released_reason = 'expired'` era inalcanzable
 
-**`src/views/admin/clientes/clientes-tabs.tsx:19`**
+**Arreglo aplicado:** `private.sync_coupon_reservation()` ahora discrimina
+por `(select auth.uid()) is null`: sin sesión (los únicos caminos de
+`service_role` que cancelan un pedido impago son `expire_pending_orders` y la
+conciliación, y los dos son "venció" en sentido de producto) → `'expired'`;
+con sesión (staff cancelando con el cliente RLS, que es el único camino con
+`auth.uid()` no nulo) → `'cancelled_unpaid'`. Descartaron a propósito mi
+sugerencia de discriminar por `old.status = 'pending'`, con una razón que
+comparto: etiquetaría "venció sin pagar" una cancelación manual de un pedido
+todavía pendiente, y una etiqueta falsa es peor que una que se queda corta si
+mañana aparece un tercer camino de servidor. El límite queda escrito en el
+propio comentario del trigger.
 
-```ts
-{ href: '/admin/clientes/cupones', label: 'Cupones' },
-```
+**Verificado:** leí el `case when (select auth.uid()) is null then 'expired'
+else 'cancelled_unpaid' end` en el cuerpo actual del trigger. Es un
+discriminador más preciso que el que yo había propuesto, y la razón para
+descartar mi alternativa es correcta.
 
-Documentado y aceptado explícitamente en el propio código (línea 9 del
-comentario) y en el informe de T2A: *"es un link muerto hasta que ese slice se
-integre, esperado."* Si Entrega A se commitea y se despliega a producción
-antes que Entrega B, el dueño de cualquier local va a ver una tab "Cupones"
-que da 404. No es una regla dura violada (no hay ningún dato ni capacidad
-expuesta de más), pero si el plan de despliegue permite que A salga sola a
-producción, vale la pena esconder la tab hasta que T4B exista, en vez de
-mostrar un 404 a un usuario real. Deuda anotada, no bloqueante — asumo que A y
-B se integran juntas antes de deploy, dado que `01-tasks.md` dice "B no
-arranca hasta que A esté integrada", lo cual sugiere que ambas se completan
-antes de un release visible al dueño.
+### 5 — MAYOR (RESUELTO) — Mensaje de cupón duplicado a mano
 
----
+**Arreglo aplicado:** `coupon.model.ts` ya no tiene su propio
+`COUPON_MESSAGES` — importa `COUPON_REJECTION_MESSAGES` (y de paso
+`PAYMENT_METHOD_LABELS`, cerrando también el nit que señalaba esa misma
+duplicación) desde `@/models/schemas/order.schema`. Y algo mejor de lo que yo
+había pedido: `resolveCoupon()` en `order.model.ts` ya no decide
+`codeNotFound` comparando el TEXTO del rechazo — `validateCouponForCart` ahora
+devuelve un `reasonCode` de un enum cerrado (`'not_found' | 'inactive' | ...`)
+y `resolveCoupon` compara `reasonCode === 'not_found'` directo. Elimina de raíz
+la clase de bug que motivaba el hallazgo (dos módulos comparando strings) en
+vez de solo consolidar los strings en un lugar.
 
-### 5. [Nit — arquitectura, ya señalado por el propio T3A] `unsubscribe.actions.ts` mezcla lectura y escritura en un `.actions.ts`
+**Corrección sobre mi propio informe:** el coordinador señala, con razón, que
+mi hallazgo ya estaba desactualizado en su parte más importante cuando lo
+escribí — la comparación por texto que yo describí como el mecanismo vigente
+ya había sido reemplazada por el enum antes de que yo terminara mi revisión.
+Lo dejo anotado porque es una falla de mi propio proceso (verificar contra un
+estado de archivo que ya había cambiado), no del código.
 
-**`src/controllers/unsubscribe.actions.ts`** — `getUnsubscribeTargetAction`
-(lectura, la consume `src/app/baja/[token]/page.tsx`, un Server Component) y
-`confirmUnsubscribeAction` (escritura, la consume el Client Component
-`unsubscribe-button.tsx` y el route handler de one-click) viven en el mismo
-archivo `.actions.ts`.
+**Verificado:** grep de `COUPON_MESSAGES` en `coupon.model.ts` — ya no
+existe; el import de `order.schema` está presente; `resolveCoupon` usa
+`reasonCode === 'not_found'`.
 
-**Veredicto pedido explícitamente — dictamen:** no rompe ninguna regla dura.
-El archivo solo exporta funciones async (cumple el requisito técnico real de
-Next: un módulo con `'use server'` en la primera línea solo puede exportar
-async functions); los helpers síncronos (`humanizeRetryAfter`, `clientIp`,
-`consumeUnsubscribeBudget`) **no están exportados**, así que no violan esa
-regla tampoco. Y no agrega capacidad: `getUnsubscribeTargetAction` expone
-exactamente la misma información que ya sale por el `GET` de la página, está
-detrás del mismo balde de rate limiting (`unsubscribe:ip`) que la escritura, y
-no acepta ningún parámetro que la lectura por HTML no tuviera ya.
+### 6 — MENOR (RESUELTO) — `resendPendingChangeCodeAction` perdía el `subjectId`
 
-Dicho eso, **es una desviación real de la convención documentada**
-(`.controller.ts` con `server-only` para lecturas que consume un Server
-Component, `.actions.ts` para lo que consume un Client Component) y el propio
-T3A la señaló sin animarse a tocarla por no ser dueño de `controllers/`. Mi
-recomendación: mover `getUnsubscribeTargetAction` a un `unsubscribe.controller.ts`
-nuevo con `import 'server-only'` (calcando `customers.controller.ts`, que en
-este mismo slice hace exactamente esa separación bien), y dejar
-`confirmUnsubscribeAction` sola en `unsubscribe.actions.ts`. Es un refactor de
-minutos y no bloquea el commit de hoy, pero conviene resolverlo antes de que
-Entrega B agregue más superficie a este mismo archivo.
+**Arreglo aplicado:** `getLivePendingChange` ahora selecciona y devuelve
+`subject_id`, y `resendPendingChangeCodeAction` pasa
+`subjectId: live.subjectId ?? undefined` a `startPendingChange`. Un reenvío
+de código de cupón ya invalida correctamente el pendiente original en vez de
+dejar dos códigos vivos a la vez.
 
----
+**Verificado:** leí el `select` de `getLivePendingChange` (incluye
+`subject_id`) y la llamada en `admin.actions.ts`, con un comentario que cita
+este mismo informe.
 
-### 6. [Nit] Comentario redundante en el `INSERT` del backfill vs. `recalc_store_customer`
+### 7 — MENOR (RESUELTO) — El menú de WhatsApp ofrecía cupones vencidos/agotados
 
-No es un hallazgo de código, es solo una observación de mantenibilidad: el
-backfill (`supabase/migrations/20260901120000_clientes.sql:427-439`) y el
-trigger llaman a la misma función `private.recalc_store_customer`, así que el
-Hallazgo 1 se corrige en un solo lugar y automáticamente arregla tanto el
-camino en vivo como el backfill. Se confirmó así en la re-verificación: no
-hizo falta tocar el `do $$` del backfill aparte.
+**Arreglo aplicado:** `coupon-whatsapp-menu.tsx` importa `isCouponUsable` de
+`lib/coupon.ts` y filtra `activeCoupons.filter((c) => isCouponUsable(c))`
+adentro del propio componente — no depende de que `page.tsx` filtre bien, así
+que la garantía queda en el punto de uso.
 
----
+**Verificado:** grep confirma el import y el filtro en el archivo actual.
 
-### 7. [Menor — preexistente, fuera de alcance] Solo `/admin/clientes` declara `metadata`; el resto del panel muestra "Pedidos" en la pestaña del navegador
+### 8 — MENOR (RESUELTO) — `canDelete` no contemplaba canjes `released`
 
-Reportado por el hilo principal al verificar el fix del Hallazgo 1 en browser:
-`/admin/clientes` declara su `metadata` (`{ title: 'Clientes' }`), pero
-`/admin/repartidores`, `/admin/pagos` y `/admin/ajustes` **no** lo hacen, así
-que el tab del navegador queda con el título de `/admin/pedidos` (heredado,
-probablemente el primer `metadata` que se declaró en el layout compartido) sin
-importar en qué sección del panel esté parado el dueño.
+**Arreglo aplicado:** `coupon-detail.tsx` cambió `canDelete` a
+`current.recentRedemptions.length === 0`, exactamente la sugerencia del
+informe original.
 
-No es de este slice — arreglarlo toca un layout compartido de `/admin/(app)/`
-que ninguna tarea de T0A–T3A tiene como dueño, y no lo introduce esta rama:
-ya pasaba antes con las tres secciones existentes. Lo dejo anotado para que no
-se lea como una regresión de Entrega A y para que quede a mano si en algún
-momento se decide una pasada de `metadata` sobre todo `/admin`.
+**Verificado:** leí la línea actual.
 
----
+### 9 — MENOR (RESUELTO) — `redemptionsLastMonth` contaba por fecha de reserva
 
-## Los tres puntos pedidos, dictaminados
+**Arreglo aplicado:** la query en `campaign.model.ts` ahora filtra
+`.gte('redeemed_at', oneMonthAgo)` en vez de `created_at`, con un comentario
+que explica la diferencia.
 
-1. **`unsubscribe.actions.ts` con lectura + escritura** → ver Hallazgo 5. Se
-   acepta funcionalmente (no viola ninguna regla dura, no agrega capacidad),
-   pero recomiendo el refactor a `.controller.ts` para la lectura antes de que
-   Entrega B siga creciendo ese archivo. No bloqueante.
-2. **"Tus derechos" en `/legal/privacidad`** → ver Hallazgo 3. El texto no
-   alcanza tal cual: falta la salvedad de que el padrón se reconstruye desde
-   `orders` en cada compra nueva, así que "borrar" no es durable mientras el
-   cliente siga comprando. Recomiendo precisarlo en una iteración chica de
-   texto, sin inventar un camino de autoservicio. No bloqueante para este
-   commit, pero sí antes de anunciar el feature puertas afuera.
-3. **Criterios visuales sin verificar en browser (rail de 9 ítems, scroll
-   horizontal)** → no lo dupliqué. Leyendo el código: el rail pasa de 8 a 9
-   ítems reusando el mismo `<nav>` de `AdminShell` sin cambiar anchos ni
-   breakpoints, y ninguna fila/columna nueva de `customer-row.tsx` usa un
-   ancho fijo en `px` que pudiera forzar overflow (todo es `minmax(0, ...)`,
-   `truncate`, y `shrink-0` solo en los elementos que ya tienen ancho
-   intrínseco chico como `Price` y los botones de 44px). El hilo principal ya
-   lo confirmó en browser entre 390 y 500px sin desborde horizontal — queda
-   cerrado, no hace falta que lo repita.
-4. **Metadata de tab del navegador** (hallazgo nuevo del hilo principal, ver
-   Hallazgo 7) → deuda anotada, preexistente en el resto del panel, no
-   introducida por esta rama y fuera de alcance de T0A–T3A.
+**Verificado:** leí la query actual.
 
----
+### 10 — MENOR (RESUELTO) — `sendCampaignAction` gastaba el balde antes de validar
 
-## Verificado y correcto (para no reauditar después)
+**Arreglo aplicado:** el `consumeOrThrow('campaign_send:store', ...)` se
+movió después del chequeo de `fitsBeforeExpiry`, con un comentario que cita
+este hallazgo explícitamente.
 
-- **Predicado de dinero**: `private.order_is_customer_spend` reusa
-  `order_is_billable` y agrega las dos exclusiones exactas de §5.4
-  (`in_store` reembolsado, online cancelado post-pago). El trigger, el
-  backfill y la RPC usan la misma función — no hay una segunda copia del
-  predicado en ningún lado.
-- **Centavos enteros**: `total_spent_cents` es `bigint`, `sum(o.total_cents)`
-  sobre `bigint`, `avgTicketCents` es división entera en SQL
-  (`sc.total_spent_cents / sc.orders_count`, con guarda `> 0`). Ningún float
-  en el camino del dinero.
-- **Aislamiento multi-tienda**: `store_customers` tiene `unique (store_id,
-  phone_e164)`, cero grants para `anon`/`authenticated` (confirmado en la
-  migración: `revoke all ... grant ... to service_role` únicamente), y las
-  dos escrituras del modelo (`updateCustomerNotes`, `setCustomerOptOut`)
-  llevan `.eq('id', customerId).eq('store_id', storeId)` explícito — un
-  `customerId` de otra tienda da 404 de dominio, no un cross-tenant write.
-- **Cliente de Supabase correcto en cada lugar**: `getCustomerDirectory` usa
-  `createClient()` (sesión), nunca admin — verificado contra la trampa
-  documentada de `store_couriers`/`auth.uid()`. Las dos escrituras del dueño
-  usan `createAdminClient()` detrás de `requireStoreMembership(id, {role:
-  'owner'})`. `findCustomerByUnsubscribeToken`/`optOutByToken` usan admin
-  client sin sesión, correcto para una ruta pública autorizada solo por
-  token.
-- **El trigger no puede tirar con datos válidos**: `sync_store_customer` no
-  hace casts, no divide, no lee otra tienda; `recalc_store_customer` tiene
-  guarda temprana para `store_id`/`phone` nulos o vacíos. `SECURITY DEFINER`
-  está justificado y documentado (el KDS mueve `status` con el cliente de
-  sesión, que no tiene grant directo sobre `store_customers`).
-- **Autorización doble**: el layout de `/admin/clientes` no resuelve sesión
-  (confirmado, `layout.tsx` no importa nada de `controllers/`); el
-  `page.tsx` hace `resolveAdminSession()` + `redirect` si `role !== 'owner'`;
-  el controller repite `requireStoreMembership(storeId, {role: 'owner'})`; la
-  RPC repite `is_store_owner()` adentro. Cuatro capas, ninguna redundante
-  (cada una cierra un bypass distinto). El ítem del rail está filtrado por
-  `ownerOnly: true` y `visibleNavItems`.
-- **La ruta pública de baja**: `GET` nunca escribe (`getUnsubscribeTargetAction`
-  es de solo lectura); `POST` en `/baja/[token]/one-click` siempre devuelve
-  200 vacío, incluso con token inválido o ya usado (`toActionResult` nunca
-  deja escapar una excepción); `optOutByToken` es idempotente y conserva la
-  fecha original (`.is('marketing_opt_out_at', null)` en el `update`); un
-  token inexistente y uno ya dado de baja muestran la misma pantalla genérica
-  (`UnsubscribeView`, verificado en runtime por T3A contra Postgres). El
-  problema de ruteo que el informe de T3A describe (conflicto `page.tsx` +
-  `route.ts` en el mismo path) está resuelto en el árbol actual: verifiqué
-  con `find`/`cat` directo sobre el filesystem que hoy solo existen
-  `[token]/page.tsx` y `[token]/one-click/route.ts`, sin conflicto.
-- **`RESERVED_SLUGS` en paridad**: comparé programáticamente las dos listas
-  (`platform.schema.ts` vs. el CHECK de la migración) — 116 slugs de cada
-  lado, conjuntos idénticos.
-- **`whatsappHref` usado correctamente**: `customer-row.tsx` importa el
-  helper de `src/lib/whatsapp.ts` y no arma ninguna URL de `wa.me` a mano
-  (grep limpio). El mensaje precargado nunca incluye `totalSpentCents` ni
-  ningún monto, `{nombre}` es `firstToken(displayName)`, y el botón se
-  deshabilita (no desaparece) tanto sin `email` como con
-  `marketingOptOutAt` seteado.
-- **Piso de calidad de UI**: sin kicker/eyebrow, sin `Panel` anidado
-  (`EmptyState` es un `div` plano, no un `Panel`), sin emoji como ícono
-  (`WhatsApp` es un SVG propio), `.tabular` solo en plata/cantidades/fechas,
-  botones de contacto en `size-11` (44px), sin `rounded-[...]` de sintaxis
-  v3 en ningún archivo nuevo.
-- **Copy**: rioplatense, voseo, sin "usted", en las dos páginas legales y en
-  los mensajes de WhatsApp. Nada que insinúe métricas o casos de éxito
-  inexistentes.
-- **Tipos regenerados**: `database.types.ts` incluye `store_customers` y
-  `store_customer_directory` con columnas/firma consistentes con la
-  migración — `db:types` sí se corrió.
-- **Cero fetching en views, cero `@supabase/*` en `app/**/page.tsx`**:
-  grepeado en todos los archivos nuevos de T2A y T3A.
+**Verificado:** leí el orden actual de `sendCampaignAction`.
+
+### 11 — MENOR (RESUELTO) — `max_discount_cents` sin CHECK de signo
+
+**Arreglo aplicado:** la rama `percentage` del CHECK de `coupons` ahora exige
+`max_discount_cents is null or max_discount_cents > 0`.
+
+**Verificado:** leí el CHECK actual en la migración.
+
+### 12 — MENOR (RESUELTO) — Limpieza de campañas atada al presupuesto diario
+
+**Arreglo aplicado:** los dos `update` de limpieza (marcar `failed` a los que
+agotaron reintentos, cerrar campañas sin cola) corren ANTES del
+`if v_remaining <= 0 then return`, con un comentario explícito de por qué el
+orden importa.
+
+**Verificado:** leí el orden actual del cuerpo de `claim_campaign_recipients`.
+
+### 13 — MENOR (RESUELTO, con más alcance del que pedí) — `'sent'` con cero envíos
+
+**Arreglo aplicado:** se sumó `stopped_reason = 'no_recipients'` al enum, y
+los `case` de status en los CUATRO lugares que pueden cerrar una campaña
+(limpieza al principio del claim, el camino nuevo de "cola vacía por baja
+masiva" dentro del mismo claim, y `settle_campaign_recipient`) usan
+`else 'stopped'` en vez de `else 'sent'` cuando no hubo ni enviados ni
+fallados. El coordinador encontró, verificando en ejecución, un cuarto
+camino que mi hallazgo original no cubría: si el bloque de limpieza corre al
+principio (antes del re-chequeo de bajas) pero la cola se vacía DESPUÉS por
+ese mismo re-chequeo, la campaña quedaba en `queued` para siempre sin que
+nada la cerrara. Se agregó un cierre específico para ese caso.
+
+**Verificado:** leí los cuatro sitios; los cuatro usan `'stopped'` +
+`'no_recipients'` para el caso de cero envíos y cero fallos, nunca `'sent'`.
+El label en `format.ts` (`campaignStoppedReasonLabel`) y el tipo
+`CampaignStoppedReason` en `types.ts` ya incluyen `'no_recipients'` —
+`typecheck` no se queja de un caso sin cubrir en el `switch`.
 
 ---
 
-## Re-verificación del Hallazgo 1 (única sección re-auditada)
+## Lo que sigue abierto (nits, no bloquean, no forman parte del cierre de esta entrega)
 
-El fix quedó en `supabase/migrations/20260901120000_clientes.sql:169-178`,
-como un `coalesce` de tres ramas en el `select` de `recalc_store_customer`:
+Ninguno de los nits de la primera pasada se mencionó como arreglado, y no los
+volví a verificar uno por uno en esta vuelta porque ninguno afecta el
+veredicto. Quedan tal como estaban documentados: el tipo muerto
+`CouponChangeKind`, la FK simple (no compuesta) de `coupon_campaigns.coupon_id`,
+la reutilización de `CPN09` para dos rechazos distintos, el brief de
+`campaign-sheet.tsx` sobre recalcular en vivo (resuelto en la práctica por
+otro mecanismo), el `.tabular` en el input de código, el link de "últimos
+canjes" a un rango de fechas en vez de al pedido puntual, el `$0` tachado en
+la línea de cupón rechazado, el comentario de signo en `lib/coupon.ts:139`,
+el orden de `confirmCouponChangeAction` (consume antes de chequear `kind`),
+los índices de FK incompletos (`created_by`, `campaign_recipients.store_id`),
+y el timezone UTC en el mail de campaña. Ninguno toca dinero, estado ni
+seguridad; quedan para una pasada de mantenimiento.
 
-```sql
-coalesce(
-  (array_agg(o.customer_name order by o.created_at desc)
-     filter (where private.order_is_customer_spend(
-       o.payment_status, o.payment_method, o.status, o.refunded_at)))[1],
-  (array_agg(o.customer_name order by o.created_at desc))[1],
-  ''
-),
-```
+## Lo que verifiqué y sigue en pie de la primera pasada
 
-**Por qué no alcanzaba con agregar el filtro solo.** Tenía razón en el
-diagnóstico pero no había pensado en esta consecuencia: `array_agg(...)
-filter (...)` sobre cero filas que matcheen el filtro devuelve `NULL`, no un
-array vacío. Un cliente con **cero pedidos facturables** —que tiene fila a
-propósito, por diseño (§5.3: *"el que pidió y canceló es un cliente"*)— habría
-quedado con `display_name = ''` si el filtro fuera la única rama: la fila se
-vería en blanco en el padrón. La segunda rama (el nombre del pedido más
-reciente **sin** filtrar) es exactamente el fallback que ese caso necesita, y
-la tercera (`''`) es un último recurso inalcanzable en la práctica porque
-`having count(*) > 0` garantiza al menos una fila y `customer_name` no admite
-`NULL` en `orders` — está bien que quede como red, no como código muerto que
-haya que sacar.
+Todo lo que la primera versión de este documento listaba en "Lo que verifiqué
+y está bien" (dinero y contratos del pedido, los tres clientes de Supabase,
+la migración columna por columna contra las versiones previas, el segundo
+factor de cupones, email y cron, el piso de calidad del frontend, y la
+búsqueda del patrón de tests inventados) sigue siendo cierto: nada de eso se
+tocó entre la primera y la segunda vuelta, y `npm test` en verde con la base
+recreada desde cero lo respalda.
 
-**Verificación específica pedida — sin abrir un hallazgo nuevo:**
+## Nota de proceso heredada, todavía sin resolver: un test de `tests/db/` se vio flaky bajo la suite completa
 
-- **Mismo predicado en las tres ramas.** Las dos primeras usan
-  `private.order_is_customer_spend(o.payment_status, o.payment_method,
-  o.status, o.refunded_at)` con los mismos cuatro argumentos en el mismo
-  orden que el resto de las columnas agregadas en esa sentencia
-  (`orders_count`, `total_spent_cents`, `first_order_at`, `last_order_at`).
-  No hay una copia divergente del predicado.
-- **No hay forma de que una rama devuelva el nombre de otra tienda o de otro
-  teléfono.** Las tres ramas leen del mismo `array_agg(o.customer_name ...)`,
-  construido sobre el mismo `from public.orders o where o.store_id =
-  p_store_id and o.customer_phone_e164 = p_phone` que scopea toda la
-  sentencia — ese `where` corre antes que cualquiera de los dos `filter`, así
-  que ambas ramas ya están acotadas a exactamente ese `(store_id, phone)`.
-  El segundo `array_agg` (la rama sin filtrar) no es un `array_agg` distinto
-  sobre un universo más amplio: es el mismo universo (este teléfono, esta
-  tienda), sin el filtro adicional de facturable. No hay cross-tenant ni
-  cross-phone posible acá.
-- **`email` queda como estaba, correctamente sin el filtro** (Hallazgo 2):
-  confirmado que el fix no le agregó por error la misma condición a la rama
-  de `email`, que según §5.2 no la necesita.
-- **El test que estaba rojo ahora pasa**, y hay uno nuevo
-  (`tests/db/store-customers.test.ts:148`, "un cliente con SOLO pedidos no
-  facturables... tiene fila con `orders_count = 0` Y `display_name` NO
-  vacío") que cubre exactamente la tercera rama del `coalesce` — es el caso
-  que protege contra volver a romper esto si alguien "simplifica" el
-  `coalesce` a dos ramas en el futuro.
-- Acepto sin re-correrlas las verificaciones que ya hizo el hilo principal
-  (suite completa 83/1023 en verde, `typecheck`/`lint` limpios, la app
-  arrancando sin el conflicto de rutas, el flujo de baja completo con curl, y
-  el layout mobile entre 390–500px) — no las duplico porque el pedido fue
-  re-verificar específicamente el Hallazgo 1.
+En la primera pasada anoté un fallo aislado de
+`tests/db/campaign-lifecycle.test.ts` bajo `npm test` completo, que no
+reproduje corriendo el archivo solo. No lo volví a ver en esta vuelta (dos
+corridas completas, ambas en verde), pero tampoco identifiqué la causa raíz
+la primera vez, así que lo dejo como observación abierta para
+`test-engineer`, no como algo que este veredicto dé por cerrado. El
+coordinador aporta un antecedente relacionado pero distinto: una extracción
+suya dropeó por error `coupon_redemptions_sync_counters` durante su propia
+verificación y puso 6 tests en rojo que no eran bugs de producción —resuelto
+con el mismo `db:reset`, y confirmé los cuatro triggers presentes en la base
+actual. Si el flaky original vuelve a aparecer, vale la pena descartar
+primero un problema de aislamiento entre archivos de `tests/db/` que
+comparten tablas del mismo feature bajo el pool de workers de vitest, antes
+de asumir que es ruido de Docker.
 
-**Cierra el hallazgo sin abrir uno nuevo.**
+---
 
-## Bloqueantes (resumen)
+## Blockers
 
-Ninguno. El Hallazgo 1 —el único bloqueante— está resuelto y re-verificado.
+Ninguno. Los 13 hallazgos de la primera pasada están resueltos y verificados
+contra el código actual y, para el bloqueante, contra el servidor corriendo.
+`typecheck`, `lint` y `npm test` (99 archivos, 1289 tests, 0 fallas, 4 skips)
+en verde en dos corridas independientes con la migración aplicada desde cero.
 
-Deuda anotada, no bloqueante, para una próxima iteración:
-
-1. **Hallazgo 3** — el texto de "Tus derechos" en `/legal/privacidad` promete
-   un borrado que el padrón no puede sostener si el cliente sigue comprando
-   (la fila se reconstruye desde `orders` en cada compra nueva). A decidir
-   **antes de anunciar el feature**, no antes de commitear.
-2. **Hallazgo 4** — la tab "Cupones" es un link muerto hasta que Entrega B se
-   integre. Esperado si A y B se integran juntas antes de un release visible.
-3. **Hallazgo 5** — `unsubscribe.actions.ts` mezcla una lectura y una
-   escritura en el mismo `.actions.ts`. No viola ninguna regla dura ni agrega
-   capacidad; recomendable moverla a un `unsubscribe.controller.ts` antes de
-   que Entrega B siga creciendo ese archivo.
-4. **Hallazgo 7** — solo `/admin/clientes` declara `metadata` de tab; el
-   resto del panel (`repartidores`, `pagos`, `ajustes`) ya tenía este
-   problema antes de esta rama. Fuera de alcance de T0A–T3A.
+Queda pendiente el veredicto de `test-engineer` (`03-tests.md`) para que el
+commit proceda — mi mandato es correctness y adherencia al diseño, no la
+cobertura de la suite.

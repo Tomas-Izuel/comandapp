@@ -338,6 +338,19 @@ export function OrderTracking({
             <span className="text-muted-foreground">Subtotal</span>
             <Price cents={order.subtotalCents} currency={order.currency} className="tabular" />
           </div>
+          {/* Solo si hubo cupón: mismo criterio que el checkout, entre subtotal
+              y envío. El total ya lo trae calculado el servidor — acá no se
+              resta nada, solo se explica de dónde salió (00-architecture.md
+              §5.14.4): un total que no cierra con los ítems es lo que este
+              cliente vería sin esta línea. */}
+          {order.discountCents > 0 && order.couponCodeSnapshot ? (
+            <div className="text-primary flex items-baseline justify-between">
+              <span>Descuento {order.couponCodeSnapshot}</span>
+              <span className="tabular">
+                −<Price cents={order.discountCents} currency={order.currency} />
+              </span>
+            </div>
+          ) : null}
           {order.deliveryMethod === 'delivery' ? (
             <div className="flex items-baseline justify-between">
               <span className="text-muted-foreground">Envío</span>

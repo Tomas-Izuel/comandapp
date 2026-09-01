@@ -176,11 +176,27 @@ function ConfirmDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2.5">
-          <span className="text-muted-foreground text-sm">Monto a confirmar</span>
-          <span className="tabular text-lg font-semibold">
-            <Price cents={order.totalCents} currency={currency} exact />
-          </span>
+        {/*
+          Sin descuento este bloque queda IDÉNTICO al de antes (misma fila
+          única). Con descuento, quien confirma la transferencia mirando su
+          cuenta necesita saber por qué lo que entró es menos que el pedido
+          — si no, "no coincide" y no hay forma de saber que es el cupón.
+        */}
+        <div className="flex flex-col gap-1 rounded-lg bg-muted/50 px-3 py-2.5">
+          {order.discountCents > 0 ? (
+            <div className="flex items-baseline justify-between gap-3 text-sm">
+              <span className="text-muted-foreground min-w-0 truncate">Descuento {order.couponCodeSnapshot}</span>
+              <span className="tabular">
+                −<Price cents={order.discountCents} currency={currency} />
+              </span>
+            </div>
+          ) : null}
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground text-sm">Monto a confirmar</span>
+            <span className="tabular text-lg font-semibold">
+              <Price cents={order.totalCents} currency={currency} exact />
+            </span>
+          </div>
         </div>
 
         <ReceiptSection order={order} />

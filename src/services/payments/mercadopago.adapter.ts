@@ -191,14 +191,20 @@ export const mercadopagoAdapter: PaymentProvider = {
   }) {
     // MP arma su propio total sumando `unit_price * quantity` de cada item, así
     // que `checkout.controller.ts` agrega el envío como un item más ("Envío")
-    // cuando corresponde — nunca viaja escondido dentro de `totalCents`. Acá
-    // solo queda chequear una cota defensiva: el total del pedido nunca puede
-    // ser MENOR que la suma de sus items. Si lo es, hay un bug de quien llamó
-    // a este adapter (se olvidó de sumar el item del envío) y es mejor romper
-    // acá que dejar que MP le cobre de menos al cliente.
+    // cuando corresponde, o manda un ÚNICO item con `unitPriceCents = totalCents`
+    // cuando el pedido tiene descuento (§5.8.4) — nunca el envío o el descuento
+    // viajan escondidos dentro de `totalCents` sin que los items lo reflejen.
+    //
+    // La cota es de IGUALDAD ESTRICTA, no "menor o igual": antes toleraba que el
+    // total fuera MAYOR que los items (nadie lo aprovechaba), pero con
+    // descuento eso sería exactamente el bug de "MP le cobra de más al
+    // cliente". Cualquier discrepancia de armado —de más o de menos— es un bug
+    // de quien llamó a este adapter y tiene que explotar acá, en el primer
+    // pedido de prueba, no convertirse en un `mismatch` permanente cuando
+    // llegue el webhook.
     const itemsTotalCents = sumCents(items.map((item) => item.unitPriceCents * item.quantity))
-    if (totalCents < itemsTotalCents) {
-      throw new Error(`El total del pedido ${orderShortCode} (${totalCents}) es menor que la suma de sus items (${itemsTotalCents}).`)
+    if (totalCents !== itemsTotalCents) {
+      throw new Error(`El total del pedido ${orderShortCode} (${totalCents}) no coincide con la suma de sus items (${itemsTotalCents}).`)
     }
 
     const accessToken = await requireAccessToken(storeId)

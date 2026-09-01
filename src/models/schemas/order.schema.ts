@@ -103,6 +103,55 @@ export const paymentMethodSchema = z.enum(['online', 'in_store', 'transfer'])
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>
 
 /**
+ * Cómo se llama cada método EN LA INTERFAZ. El dominio no tiene "efectivo": ver
+ * `00-architecture.md §5.9.4`. Se usa para armar el mensaje de un cupón
+ * restringido a un método ("Ese cupón vale solo pagando con Mercado Pago").
+ */
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  online: 'Mercado Pago',
+  transfer: 'Transferencia',
+  in_store: 'Pago al recibir',
+}
+
+/**
+ * Los diez SQLSTATE que levanta el bloque de cupón dentro de `create_order`
+ * (`supabase/migrations/20260901130000_cupones.sql`). CPN09 y CPN10 no tienen
+ * texto de interfaz: son un bug NUESTRO —el descuento que calculó TypeScript no
+ * coincide con el que acaba de calcular la base bajo lock, o llegó un
+ * descuento sin código que lo justifique— y se tratan como falla interna
+ * (log + mensaje genérico), nunca como `DomainError`.
+ */
+export const COUPON_ERROR_CODES = {
+  notFound: 'CPN01',
+  inactive: 'CPN02',
+  notStarted: 'CPN03',
+  expired: 'CPN04',
+  exhausted: 'CPN05',
+  phoneLimit: 'CPN06',
+  minSubtotal: 'CPN07',
+  paymentMethod: 'CPN08',
+  amountMismatch: 'CPN09',
+  missingCoupon: 'CPN10',
+} as const
+
+/**
+ * Los mensajes de interfaz que NO dependen del carrito (§5.9.4). Los que sí
+ * dependen (mínimo del cupón, método de pago) se arman en `order.model.ts`
+ * porque necesitan el subtotal y la lista de métodos del cupón concreto.
+ *
+ * `notFound` cubre a propósito "no existe" Y "está en `draft`/`paused`": decirle
+ * a quien está sondeando códigos que uno existe pero está apagado es
+ * información gratis sobre el padrón del local.
+ */
+export const COUPON_REJECTION_MESSAGES = {
+  notFound: 'Ese código no existe o ya no está disponible.',
+  notStarted: 'Ese cupón todavía no arrancó.',
+  expired: 'Ese cupón ya venció.',
+  exhausted: 'Ese cupón ya se agotó.',
+  phoneLimit: 'Ya usaste ese cupón.',
+} as const
+
+/**
  * Tope duro del comprobante, en el servidor. 4 MB y no los 5 del bucket: el
  * bucket tiene margen de sobra (backstop), pero acá se rechaza ANTES de que
  * Vercel devuelva su propio `413 FUNCTION_PAYLOAD_TOO_LARGE`, que no dice nada
@@ -240,6 +289,30 @@ export const createOrderSchema = z
       .transform((v) => (v === '' ? undefined : v))
       .pipe(z.email('Revisá el email').optional()),
     notes: z.string().trim().max(400).optional(),
+
+    /**
+     * El código, nunca el monto. Se normaliza a MAYÚSCULAS acá porque
+     * `coupons.code` es `^[A-Z0-9]{4,16}$` y `create_order` vuelve a normalizar
+     * del mismo modo — un `descuento10` en minúscula no matchearía y el
+     * cliente vería "no existe", indistinguible de un código inventado.
+     *
+     * `.strict()` en el objeto entero es la razón de que esto sea seguro: un
+     * body con `discountCents` es un 400 que nombra la clave, nunca un campo
+     * que se descarta en silencio (§5.9.1).
+     *
+     * SIN `.transform((v) => v === '' ? undefined : v)` A PROPÓSITO, a
+     * diferencia de `customerEmail`/`optionalText` de acá arriba: agregarlo
+     * infla la inferencia de este `.strict().superRefine(...)` ya grande lo
+     * suficiente como para que TypeScript reporte "Two different types with
+     * this name exist" sobre `CreateOrderInput` en cualquier archivo que lo
+     * importe (verificado: aparece y desaparece con este único chequeo). No
+     * hace falta: un `''` que llegue acá es falsy en todos los `if
+     * (parsed.couponCode)` de `order.model.ts`/`checkout.controller.ts`, y del
+     * lado de Postgres `create_order` ya hace `nullif(..., '')` sobre
+     * `coupon_code` — un string vacío y `null` terminan siendo exactamente lo
+     * mismo en los dos lados.
+     */
+    couponCode: z.string().trim().toUpperCase().max(16).optional(),
 
     /**
      * Cómo lo recibe. El cliente elige el MÉTODO; el costo del envío lo calcula

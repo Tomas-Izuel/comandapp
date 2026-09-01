@@ -47,7 +47,12 @@ const MAX_LINE_QUANTITY = 50
 // número de versión, un formato nuevo simplemente descarta lo que no
 // matchea — mismo comportamiento hoy (storage vacío se lee como `[]`), pero
 // deja la puerta abierta a migrar de verdad en vez de solo vaciar.
-const CART_FORMAT_VERSION = 1
+//
+// v2 agrega `couponCode` al lado de `lines`. Un envelope v1 (sin cupón) NO se
+// descarta: `readCart()` lo PROMUEVE en el lugar con `couponCode: null`, para
+// que alguien con el carrito armado desde antes de este deploy no pierda sus
+// líneas (00-architecture.md §5.9.1).
+const CART_FORMAT_VERSION = 2
 const ORDERS_FORMAT_VERSION = 1
 
 export type CartLine = {
@@ -81,32 +86,47 @@ function isCartLine(value: unknown): value is CartLine {
   )
 }
 
-function readCart(storeSlug: string): CartLine[] {
-  if (typeof window === 'undefined') return []
+type StoredCart = { lines: CartLine[]; couponCode: string | null }
+
+const EMPTY_CART: StoredCart = { lines: [], couponCode: null }
+
+function readCart(storeSlug: string): StoredCart {
+  if (typeof window === 'undefined') return EMPTY_CART
   try {
     const raw = window.localStorage.getItem(CART_KEY_PREFIX + storeSlug)
-    if (!raw) return []
+    if (!raw) return EMPTY_CART
     const parsed: unknown = JSON.parse(raw)
-    // Envelope versionado: `{ v, lines }`. Un formato viejo (o de una
-    // versión futura que este build no entiende) se descarta en vez de
-    // intentar leerlo a medias.
-    if (!parsed || typeof parsed !== 'object' || (parsed as { v?: unknown }).v !== CART_FORMAT_VERSION) return []
-    const lines = (parsed as { lines?: unknown }).lines
-    if (!Array.isArray(lines)) return []
+    if (!parsed || typeof parsed !== 'object') return EMPTY_CART
+    const v = (parsed as { v?: unknown }).v
+    // v1 (pre-cupones) y v2 (actual) son los dos formatos que este build
+    // entiende. Un v1 se PROMUEVE acá mismo, con `couponCode: null` — nunca
+    // se tira ni se vacía el carrito de quien lo armó antes de este deploy.
+    // Cualquier otra cosa (una versión futura que este build no reconoce) se
+    // descarta, como siempre.
+    if (v !== 1 && v !== CART_FORMAT_VERSION) return EMPTY_CART
+    const rawLines = (parsed as { lines?: unknown }).lines
+    if (!Array.isArray(rawLines)) return EMPTY_CART
     // Auto-cura una línea que haya quedado con `quantity` por encima del
     // límite ANTES de que `MAX_LINE_QUANTITY` se aplicara en `addLine`/
     // `setQuantity`: sin este saneo, esa línea vieja se queda inválida para
     // siempre (rechaza el carrito ENTERO en cada cotización y en cada intento
     // de pedido) y nada en la UI de carrito le explica al cliente por qué.
-    return lines.filter(isCartLine).map((line) => ({ ...line, quantity: Math.min(MAX_LINE_QUANTITY, Math.max(1, line.quantity)) }))
+    const lines = rawLines
+      .filter(isCartLine)
+      .map((line) => ({ ...line, quantity: Math.min(MAX_LINE_QUANTITY, Math.max(1, line.quantity)) }))
+    // `couponCode` solo existe en v2. Un v1 no tiene la clave, y por eso
+    // arriba queda en `null` directo.
+    const rawCoupon = v === CART_FORMAT_VERSION ? (parsed as { couponCode?: unknown }).couponCode : null
+    const couponCode = typeof rawCoupon === 'string' && rawCoupon.trim() !== '' ? rawCoupon : null
+    return { lines, couponCode }
   } catch {
-    return []
+    return EMPTY_CART
   }
 }
 
-function writeCart(storeSlug: string, lines: CartLine[]) {
+function writeCart(storeSlug: string, lines: CartLine[], couponCode: string | null) {
   try {
-    window.localStorage.setItem(CART_KEY_PREFIX + storeSlug, JSON.stringify({ v: CART_FORMAT_VERSION, lines }))
+    window.localStorage.setItem(CART_KEY_PREFIX + storeSlug, JSON.stringify({ v: CART_FORMAT_VERSION, lines, couponCode }))
   } catch {
     // localStorage puede fallar (modo privado, cuota llena): el carrito sigue
     // vivo en memoria para esta sesión, solo no persiste entre visitas.
@@ -154,12 +174,21 @@ type CartContextValue = {
   ensureIdempotencyKey: () => string
   /** Se llama después de un pedido creado con éxito: el próximo pedido necesita una clave nueva. */
   discardIdempotencyKey: () => void
+  /** Código de cupón tal como lo tipeó el cliente. `null` = sin cupón. La cotización decide si sirve — acá no se valida nada. */
+  couponCode: string | null
+  /**
+   * Aplica, cambia o quita (`null`) el cupón. Descarta la `idempotencyKey`
+   * en los tres casos, misma regla que `addLine`/`removeLine`/`setQuantity`/
+   * `clear`: un cupón cambia la plata del pedido igual que una línea.
+   */
+  setCouponCode: (code: string | null) => void
 }
 
 const CartContext = React.createContext<CartContextValue | null>(null)
 
 export function CartProvider({ storeSlug, children }: { storeSlug: string; children: React.ReactNode }) {
   const [lines, setLines] = React.useState<CartLine[]>([])
+  const [couponCode, setCouponCodeState] = React.useState<string | null>(null)
   const [hydrated, setHydrated] = React.useState(false)
 
   // Namespace de storage: ver `PREVIEW_STORAGE_SUFFIX`. `storeSlug` (el que
@@ -182,8 +211,10 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
     // render de SSR) y recién leemos acá, después del primer render en el
     // cliente, para no pisar el HTML hidratado con contenido distinto.
     skipNextPersistRef.current = true
+    const stored = readCart(storageSlug)
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLines(readCart(storageSlug))
+    setLines(stored.lines)
+    setCouponCodeState(stored.couponCode)
     setHydrated(true)
   }, [storageSlug])
 
@@ -193,8 +224,8 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
       skipNextPersistRef.current = false
       return
     }
-    writeCart(storageSlug, lines)
-  }, [storageSlug, lines, hydrated])
+    writeCart(storageSlug, lines, couponCode)
+  }, [storageSlug, lines, couponCode, hydrated])
 
   // La clave vive en un ref, no en estado: se lee/escribe desde el handler de
   // submit del checkout y no necesita disparar un re-render propio.
@@ -265,6 +296,20 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
     setLines([])
   }, [discardIdempotencyKey])
 
+  // Un cupón cambia la plata del pedido igual que una línea: mismo
+  // `discardIdempotencyKey()` que ya usan `addLine`/`removeLine`/
+  // `setQuantity`/`clear`, y por el mismo motivo (ver el comentario largo de
+  // arriba, en `addLine`). Cubre las tres operaciones del cupón —aplicar,
+  // cambiar, quitar (`code: null`)— porque las tres son la misma llamada.
+  const setCouponCode = React.useCallback(
+    (code: string | null) => {
+      discardIdempotencyKey()
+      const normalized = code && code.trim() !== '' ? code.trim().toUpperCase() : null
+      setCouponCodeState(normalized)
+    },
+    [discardIdempotencyKey],
+  )
+
   const itemCount = lines.reduce((sum, l) => sum + l.quantity, 0)
 
   const value = React.useMemo<CartContextValue>(
@@ -279,8 +324,23 @@ export function CartProvider({ storeSlug, children }: { storeSlug: string; child
       clear,
       ensureIdempotencyKey,
       discardIdempotencyKey,
+      couponCode,
+      setCouponCode,
     }),
-    [storeSlug, lines, itemCount, hydrated, addLine, removeLine, setQuantity, clear, ensureIdempotencyKey, discardIdempotencyKey],
+    [
+      storeSlug,
+      lines,
+      itemCount,
+      hydrated,
+      addLine,
+      removeLine,
+      setQuantity,
+      clear,
+      ensureIdempotencyKey,
+      discardIdempotencyKey,
+      couponCode,
+      setCouponCode,
+    ],
   )
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>
@@ -309,7 +369,7 @@ export function useCart(): CartContextValue {
  */
 export function clearResolvedOrderCart(storeSlug: string): void {
   if (typeof window === 'undefined') return
-  writeCart(storeSlug, [])
+  writeCart(storeSlug, [], null)
   writeIdempotencyKey(storeSlug, null)
 }
 

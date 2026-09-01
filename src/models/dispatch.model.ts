@@ -78,7 +78,13 @@ type CourierQueueRpcRow = {
   addressBetween: string | null
   addressNotes: string | null
   assignedAt: string
-  collect: { subtotalCents: number; deliveryFeeCents: number; totalCents: number; currency: string } | null
+  collect: {
+    subtotalCents: number
+    discountCents: number
+    deliveryFeeCents: number
+    totalCents: number
+    currency: string
+  } | null
 }
 
 /**

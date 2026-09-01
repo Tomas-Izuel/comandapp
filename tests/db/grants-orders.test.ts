@@ -123,3 +123,50 @@ describe.skipIf(!dbAvailable)('S-02 — las columnas transfer_receipt_* de order
     })
   }
 })
+
+/**
+ * Cupones: `discount_cents` y `coupon_code_snapshot` (`20260901130000_cupones.sql`)
+ * tampoco ganaron ningún grant nuevo para `authenticated` — la migración lo
+ * dice explícito: "orders ya tiene revoke update from authenticated más
+ * grant update (status) y nada más, así que estas dos columnas quedan fuera
+ * del alcance del browser del staff sin agregar un solo revoke". Este test
+ * es la afirmación de esa ausencia: si algún día alguien agrega
+ * `grant update (discount_cents)` "para que el staff pueda corregir un
+ * descuento a mano", un staff con la publishable key podría regalar plata
+ * sin que el CHECK del total lo note (los tres números seguirían siendo
+ * consistentes entre sí, solo que mentirosos).
+ */
+describe.skipIf(!dbAvailable)('S-02 — discount_cents y coupon_code_snapshot de orders tampoco tienen grant para authenticated', () => {
+  function couponOrderFixture(prefix: string, userId: string) {
+    return [
+      createAuthUserSql(userId, `${prefix}@example.com`),
+      `insert into public.stores (slug, name, status) values ('${uniqueSlug(prefix)}', 'Tienda', 'active') returning id \\gset store_`,
+      `insert into public.store_members (store_id, user_id, role) values (:store_id, '${userId}', 'staff');`,
+      `insert into public.orders (store_id, status, customer_name, customer_phone_e164, idempotency_key, payment_method, payment_status, subtotal_cents, discount_cents, total_cents, coupon_code_snapshot)
+         values (:store_id, 'pending', 'Cliente', '+5491100000000', gen_random_uuid()::text, 'in_store', 'pending', 1000, 0, 1000, null)
+       returning id \\gset order_`,
+    ]
+  }
+
+  it('un staff no puede escribir discount_cents por PostgREST', () => {
+    const userId = newUserId()
+    expectSqlToFail(
+      [
+        ...couponOrderFixture('s02-cpn-disc', userId),
+        ...asAuthenticated(userId, [`update public.orders set discount_cents = 999 where id = :order_id;`]),
+      ].join('\n'),
+      /permission denied for table orders/,
+    )
+  })
+
+  it('un staff no puede escribir coupon_code_snapshot por PostgREST', () => {
+    const userId = newUserId()
+    expectSqlToFail(
+      [
+        ...couponOrderFixture('s02-cpn-code', userId),
+        ...asAuthenticated(userId, [`update public.orders set coupon_code_snapshot = 'REGALO' where id = :order_id;`]),
+      ].join('\n'),
+      /permission denied for table orders/,
+    )
+  })
+})

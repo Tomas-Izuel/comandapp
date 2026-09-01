@@ -24,9 +24,10 @@ import {
   markRefunded,
   priceCart,
   recordPaymentStatusChange,
+  resolveCoupon,
   type MarkPaidOutcome,
 } from '@/models/order.model'
-import { isTerminalStatus, type PaymentRecordStatus } from '@/models/schemas/order.schema'
+import { isTerminalStatus, type PaymentMethod, type PaymentRecordStatus } from '@/models/schemas/order.schema'
 import { getPaymentProvider } from '@/services/payments'
 import type { CheckoutSession, PaymentSnapshot } from '@/services/payments/payment.port'
 import { getNotifier } from '@/services/notifications'
@@ -59,7 +60,20 @@ const isProduction = process.env.NODE_ENV === 'production'
  * entre que se pintó y se confirmó: el rebote transaccional es el camino
  * normal, no un caso raro.
  */
-export type PriceQuote = { store: Store; priced: PricedCart; eta: EtaEstimate; delivery: DeliveryQuote; fullNights: string[] }
+export type PriceQuote = {
+  store: Store
+  priced: PricedCart
+  eta: EtaEstimate
+  delivery: DeliveryQuote
+  fullNights: string[]
+  /**
+   * Señal INTERNA para el balde `coupon_check:ip` (§5.13): `true` SOLO cuando
+   * se mandó un código y no existe ninguno con ese texto para esta tienda.
+   * El route handler la lee para decidir si consume el balde y la descarta:
+   * NUNCA viaja en la respuesta JSON al cliente.
+   */
+  couponCodeMissing: boolean
+}
 
 // ---------------------------------------------------------------------------
 // Notificaciones — nunca cambian el resultado de la operación que las dispara.
@@ -104,6 +118,12 @@ function toReceiptEmailVars(
     })),
     subtotalCents: order.subtotalCents,
     totalCents: order.totalCents,
+    // Solo con cupón aplicado, y solo con el código real (nunca `0`/`undefined`
+    // de un pedido sin descuento): la plantilla decide mostrar la línea con
+    // `discountCents > 0`, nunca con la sola presencia del campo (§5.14.4).
+    ...(order.discountCents > 0 && order.couponCodeSnapshot
+      ? { discountCents: order.discountCents, couponCode: order.couponCodeSnapshot }
+      : {}),
   }
 }
 
@@ -163,14 +183,46 @@ export async function sendConfirmedWhatsapp(order: Order, store: Pick<Store, 'na
 // Cotización — la sirve tanto el carrito (precio por línea) como el checkout.
 // ---------------------------------------------------------------------------
 
-export async function priceCartForStore(storeSlug: string, items: CartItem[]): Promise<PriceQuote> {
+export async function priceCartForStore(
+  storeSlug: string,
+  items: CartItem[],
+  opts?: { couponCode?: string; paymentMethod?: PaymentMethod },
+): Promise<PriceQuote> {
   const store = await getStoreBySlug(storeSlug)
   if (!store) throw new DomainError('Esta tienda no está disponible')
 
   // `estimateEta` necesita `basePrepMinutes`, que sale de `priceCart`: no hay
   // forma de paralelizarlas acá, a diferencia de otros lugares que resuelven
   // Store y no dependen entre sí.
-  const priced = await priceCart(store, items)
+  const basePriced = await priceCart(store, items)
+
+  // Default 'online': la cotización previa a que el cliente elija método (o un
+  // frontend que todavía no manda el parámetro) sigue viendo un precio, igual
+  // que `createOrderSchema.paymentMethod`.
+  const paymentMethod = opts?.paymentMethod ?? 'online'
+  const couponResolution = await resolveCoupon({
+    storeId: store.id,
+    code: opts?.couponCode,
+    subtotalCents: basePriced.subtotalCents,
+    paymentMethod,
+    // Sin teléfono: la Fase 1 (cotización) todavía no lo conoce. El tope por
+    // teléfono lo aplica recién `createOrder` en el commit (§5.9.1).
+  })
+
+  const discountedSubtotalCents = basePriced.subtotalCents - couponResolution.discountCents
+
+  const priced: PricedCart = {
+    ...basePriced,
+    discountCents: couponResolution.discountCents,
+    coupon: couponResolution.quote,
+    // `basePriced.totalCents` es el subtotal SIN descontar: `priceCart` no
+    // conoce el cupón. Pisarlo acá es lo que mantiene la invariante
+    // `totalCents === subtotalCents - discountCents` — sin esta línea la
+    // cotización informa un descuento y un total que no lo incluye, y la vista
+    // (a la que se le prohíbe restar por su cuenta) muestra el precio de antes
+    // del cupón.
+    totalCents: discountedSubtotalCents,
+  }
 
   // Salteamos la consulta de disponibilidad cuando el local no hace envíos:
   // es un query extra por cada cotización (rate limit 120/min/IP), y para
@@ -179,17 +231,35 @@ export async function priceCartForStore(storeSlug: string, items: CartItem[]): P
     ? await getCourierAvailability(store.id)
     : { activeCouriers: 0, freeCouriers: 0 }
 
-  const delivery = buildDeliveryQuote({
+  // `buildDeliveryQuote` conflacia mínimo-de-envío y envío-gratis en un solo
+  // `subtotalCents`, pero se evalúan sobre bases DISTINTAS (§5.9.3.1): el
+  // mínimo SIN descuento, el envío gratis CON descuento. Se llama dos veces y
+  // se combina: disponibilidad/mínimo sale de la cotización SIN descontar,
+  // costo/gratis sale de la que sí lo descuenta.
+  const deliveryAvailability = buildDeliveryQuote({
     delivery: store.delivery,
     subtotalCents: priced.subtotalCents,
     availability,
     currency: store.currency,
   })
+  const deliveryPricing = buildDeliveryQuote({
+    delivery: store.delivery,
+    subtotalCents: discountedSubtotalCents,
+    availability,
+    currency: store.currency,
+  })
+  const delivery: DeliveryQuote = {
+    ...deliveryPricing,
+    minOrderCents: deliveryAvailability.minOrderCents,
+    missingForMinimumCents: deliveryAvailability.missingForMinimumCents,
+    available: deliveryAvailability.available,
+    unavailableReason: deliveryAvailability.unavailableReason,
+  }
 
   const eta = await estimateEta(store, priced.basePrepMinutes, delivery.minutesToAdd)
   const fullNights = await fullNightsFor(store)
 
-  return { store, priced, eta, delivery, fullNights }
+  return { store, priced, eta, delivery, fullNights, couponCodeMissing: couponResolution.codeNotFound }
 }
 
 /**
@@ -224,19 +294,38 @@ async function fullNightsFor(store: Store): Promise<string[]> {
 async function createCheckoutForOrder(order: Order, store: Store): Promise<CheckoutSession> {
   const provider = getPaymentProvider()
 
-  const items = order.items.map((item) => ({
-    name: item.nameSnapshot,
-    quantity: item.quantity,
-    unitPriceCents: item.unitPriceCents,
-  }))
+  const items: { name: string; quantity: number; unitPriceCents: number }[] = []
 
-  // Mercado Pago arma su propio total sumando `unit_price × quantity` de cada
-  // item de la preferencia: si el envío no viaja como un item más, MP le cobra
-  // al cliente solo el subtotal aunque `totalCents` incluya el fee. El webhook
-  // llega después con un monto que no alcanza y `markOrderPaid` lo marca
-  // `mismatch` para siempre — el cliente pagó, el pedido nunca se confirma.
-  if (order.deliveryFeeCents > 0) {
-    items.push({ name: 'Envío', quantity: 1, unitPriceCents: order.deliveryFeeCents })
+  if (order.discountCents > 0) {
+    // Con cupón, la preferencia va con UN SOLO item cuyo precio YA ES el total
+    // del pedido (subtotal − descuento + envío, §5.8.4). Restar el descuento de
+    // `totalCents` y listo rompería la cota defensiva del adapter o, sin ella,
+    // haría que MP le cobre al cliente el precio de lista (el webhook llegaría
+    // con un monto que no coincide y el pedido quedaría `mismatch` para
+    // siempre). Un item de precio negativo se descartó porque no se confirmó
+    // que el proveedor lo soporte y porque desalinea la preferencia del
+    // resumen que ve el KDS. Se pierde el detalle línea-por-línea SOLO en el
+    // checkout de MP —el cliente ya lo vio en nuestro resumen— y SOLO en los
+    // pedidos con cupón.
+    items.push({
+      name: `Pedido ${order.shortCode} — ${store.name}`,
+      quantity: 1,
+      unitPriceCents: order.totalCents,
+    })
+  } else {
+    // Sin descuento: NO CAMBIA NADA de lo que ya funcionaba.
+    for (const item of order.items) {
+      items.push({ name: item.nameSnapshot, quantity: item.quantity, unitPriceCents: item.unitPriceCents })
+    }
+
+    // Mercado Pago arma su propio total sumando `unit_price × quantity` de cada
+    // item de la preferencia: si el envío no viaja como un item más, MP le cobra
+    // al cliente solo el subtotal aunque `totalCents` incluya el fee. El webhook
+    // llega después con un monto que no alcanza y `markOrderPaid` lo marca
+    // `mismatch` para siempre — el cliente pagó, el pedido nunca se confirma.
+    if (order.deliveryFeeCents > 0) {
+      items.push({ name: 'Envío', quantity: 1, unitPriceCents: order.deliveryFeeCents })
+    }
   }
 
   const checkout = await provider.createCheckout({

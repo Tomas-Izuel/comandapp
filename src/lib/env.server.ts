@@ -87,6 +87,34 @@ const serverSchema = z.object({
   RESEND_FROM_NAME: z.string().default('Pedidos'),
 
   /**
+   * Remitente de las CAMPAÑAS de cupón (`promos.comandapp.ar`, §5.10.5 del
+   * plan de cupones). Aislado del remitente transaccional a propósito: el
+   * magic link de `/admin` sale de `RESEND_FROM_EMAIL`, y Resend corta el
+   * dominio entero si la reputación cae (bounce ≥ 4% o quejas ≥ 0,08%). Una
+   * promo tiene un perfil de engagement distinto al de un login, así que
+   * comparten dominio sería exponer la única puerta al panel a los números de
+   * una campaña.
+   *
+   * **Opcional, y degrada en vez de tirar**: sin esto, la campaña sale igual
+   * desde `RESEND_FROM_EMAIL` con un `log.warn` — el aislamiento de
+   * reputación es un riesgo estadístico y acumulativo, no binario, así que
+   * bloquear una promoción por esta variable sería un costo cierto contra un
+   * riesgo que a 15 mails/día tarda en materializarse.
+   */
+  RESEND_CAMPAIGN_FROM_EMAIL: z.string().optional(),
+
+  /**
+   * A dónde llega el pedido de más cupo de campaña (§5.10.6): cuando el tope
+   * de `CAMPAIGN_DAILY_BUDGET` no alcanza, el dueño escribe desde el preview
+   * de la campaña. Opcional y sin default a propósito —a diferencia de
+   * `SUPPORT_EMAIL`—: es una dirección comercial nueva
+   * (`ventas@comandapp.ar`, a confirmar) y no una que ya exista en todo
+   * entorno. Sin ella, el pedido no sale y el panel muestra la dirección para
+   * escribir a mano: un pedido comercial que no sale no rompe nada.
+   */
+  SALES_EMAIL: z.string().optional(),
+
+  /**
    * A dónde llegan los pedidos de soporte que manda el dueño desde
    * `/admin/pagos`. Conectar Mercado Pago es la parte del alta que más se
    * traba —hay que sacar credenciales de producción del panel de MP, que no
