@@ -41,6 +41,25 @@ function ContactIconButton({
 }
 
 /** El nombre y el teléfono, y —cuando corresponde— el aviso de cancelados. Es lo único que abre el detalle. */
+/**
+ * Las seis columnas del padrón, en UN solo lugar.
+ *
+ * Estaba escrita dos veces —acá y en el encabezado de `customer-directory.tsx`—
+ * y por eso pudo desincronizarse sin que nada avisara. Se exporta para que el
+ * encabezado la consuma: si son el mismo string, no pueden diferir.
+ *
+ * ⚠️ **La última columna es FIJA y no `auto`.** Con `auto` cada fila resolvía su
+ * propia grilla según lo que hubiera en la celda de contacto, las columnas `fr`
+ * absorbían la diferencia, y los encabezados quedaban corridos ~44px de sus
+ * valores. Una tabla cuyos encabezados no corresponden a sus celdas es peor que
+ * una sin encabezados: promete una lectura por columna que no se puede hacer.
+ *
+ * `6rem` son los dos botones de 44px más el `gap-2`. Por eso el aviso de baja
+ * NO vive en esa celda (ver `IdentityCell`): un pill de ancho variable ahí
+ * vuelve a hacer que el ancho dependa del dato de cada fila.
+ */
+export const CUSTOMER_GRID_COLS = 'lg:grid-cols-[minmax(0,1.4fr)_7rem_5rem_7rem_8rem_6rem]'
+
 function IdentityCell({ customer, onOpenDetail }: { customer: StoreCustomer; onOpenDetail: () => void }) {
   return (
     <div className="min-w-0">
@@ -48,17 +67,32 @@ function IdentityCell({ customer, onOpenDetail }: { customer: StoreCustomer; onO
         <p className="text-foreground truncate text-sm font-medium">{customer.displayName}</p>
         <p className="text-muted-foreground truncate text-xs">{customer.phoneE164}</p>
       </button>
-      {/* Un cancelado es ruido; tres es un patrón (§5.5). */}
-      {customer.cancelledOrdersCount >= 2 ? (
-        <StatusPill tone="warning" className="mt-1">
-          {customer.cancelledOrdersCount} cancelados
-        </StatusPill>
+      {/*
+        Los avisos de la fila viven ACÁ y no en la celda de contacto, y no es
+        cosmético: la columna de contacto es de ancho fijo para que la tabla
+        alinee, así que cualquier cosa de ancho variable adentro rompe eso otra
+        vez. Además la baja es una propiedad de la PERSONA, no del canal: al
+        lado del nombre es donde se lee.
+      */}
+      {customer.cancelledOrdersCount >= 2 || customer.marketingOptOutAt !== null ? (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          {/* Un cancelado es ruido; tres es un patrón (§5.5). */}
+          {customer.cancelledOrdersCount >= 2 ? (
+            <StatusPill tone="warning">{customer.cancelledOrdersCount} cancelados</StatusPill>
+          ) : null}
+          {customer.marketingOptOutAt !== null ? <StatusPill tone="neutral">Sin promos</StatusPill> : null}
+        </div>
       ) : null}
     </div>
   )
 }
 
-/** Los dos botones de contacto + el aviso de baja. Compartido entre mobile y `lg`. */
+/**
+ * Los dos botones de contacto, y NADA más. Compartido entre mobile y `lg`.
+ *
+ * El aviso de baja se movió a `IdentityCell`: acá hacía que el ancho de la
+ * celda dependiera del dato de la fila, y con eso la tabla no podía alinear.
+ */
 function ContactCell({
   customer,
   storeName,
@@ -75,7 +109,6 @@ function ContactCell({
   const optedOut = customer.marketingOptOutAt !== null
   return (
     <div className="flex items-center gap-2">
-      {optedOut ? <StatusPill tone="neutral">Sin promos</StatusPill> : null}
       <CouponWhatsappMenu
         customer={customer}
         storeName={storeName}
@@ -159,7 +192,7 @@ export function CustomerRow({
       </div>
 
       {/* `lg`: las seis columnas de §5.5, ordenada por gastado desc (ya viene ordenada del controller). */}
-      <div className="hidden lg:grid lg:grid-cols-[minmax(0,1.4fr)_7rem_5rem_7rem_8rem_auto] lg:items-center lg:gap-4">
+      <div className={`hidden lg:grid ${CUSTOMER_GRID_COLS} lg:items-center lg:gap-4`}>
         <IdentityCell customer={customer} onOpenDetail={onOpenDetail} />
         <Price cents={customer.totalSpentCents} currency={currency} exact className="text-foreground text-sm font-medium" />
         <p className="text-muted-foreground tabular text-sm">{customer.ordersCount}</p>
