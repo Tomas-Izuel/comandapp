@@ -1,14 +1,15 @@
 import { storeUrl } from '@/lib/urls'
+import { describeDiscount } from '@/lib/coupon'
 import { firstToken } from './format'
-import type { StoreCustomer } from '@/models/types'
+import type { Coupon, StoreCustomer } from '@/models/types'
 
 /**
- * Los DOS mensajes precargados de la Entrega A (00-architecture.md §5.5.1).
- * El tercero —mandar un cupón puntual— lo suma T4B cuando el menú de
- * cupones exista en esta misma fila; hasta entonces el botón de WhatsApp
- * elige entre estos dos según lo que la fila ya sabe, sin segmento de
- * campaña de por medio (decisión del dueño: la reactivación es un mensaje
- * uno a uno, no un envío masivo).
+ * Los DOS mensajes precargados de la Entrega A (00-architecture.md §5.5.1),
+ * más el tercero que suma T4B (`buildCustomerCouponMessage`): mandar un cupón
+ * puntual, elegido por el dueño desde el menú de `coupon-whatsapp-menu.tsx`.
+ * Sin segmento de campaña de por medio a propósito (decisión del dueño: la
+ * reactivación —y el cupón puntual— son un mensaje uno a uno, no un envío
+ * masivo).
  *
  * Cuatro reglas duras, y las cuatro se respetan acá:
  * 1. Nunca la plata del cliente — `totalSpentCents` no aparece en ningún
@@ -32,4 +33,24 @@ export function buildCustomerWhatsappMessage(customer: StoreCustomer, storeName:
 
   // Default: un saludo simple, sin inventar contexto que no tenemos.
   return `¡Hola ${nombre}! Somos de ${storeName}.`
+}
+
+/**
+ * El tercer mensaje (§5.5.1, T4B): el dueño eligió un cupón `active` del menú
+ * de `coupon-whatsapp-menu.tsx` para mandárselo a ESTE cliente puntual — es
+ * el único camino por el que un cupón llega a alguien sin gastar cupo de
+ * mail, y a 15 mails/día va a ser el más usado.
+ *
+ * `describeDiscount()` de `src/lib/coupon.ts`: nunca se arma la frase del
+ * descuento acá — es la misma función que usa el panel y el mail de campaña.
+ */
+export function buildCustomerCouponMessage(
+  customer: StoreCustomer,
+  storeName: string,
+  storeSlug: string,
+  coupon: Coupon,
+): string {
+  const nombre = firstToken(customer.displayName)
+  const link = storeUrl(storeSlug, '/')
+  return `¡Hola ${nombre}! Desde ${storeName} te dejamos un cupón: ${coupon.code}, ${describeDiscount(coupon)} de descuento. Lo cargás en el checkout de ${link}`
 }

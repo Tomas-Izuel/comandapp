@@ -40,6 +40,14 @@ export const CHANGE_LABELS = {
   payment_credentials: 'la cuenta de Mercado Pago donde recibís los cobros',
   courier_payment_policy: 'si el repartidor cobra en la puerta',
   bank_account: 'la cuenta bancaria donde recibís las transferencias',
+  /**
+   * Activar o reactivar un cupón (§5.11.3 del plan de cupones y campañas).
+   * No es plata directa como los otros tres, pero sí exposición de plata: un
+   * cupón activo es un descuento que cualquiera con el código puede canjear.
+   * Reusa el mismo mecanismo de `store_pending_changes` — nada nuevo que
+   * escribir, solo esta etiqueta.
+   */
+  coupon: 'un cupón de descuento',
 } as const
 
 function resendClient(): Resend | null {

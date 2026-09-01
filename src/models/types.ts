@@ -715,6 +715,13 @@ export type CourierOrder = {
    */
   collect: {
     subtotalCents: number
+    /**
+     * 0 si el pedido no llevó cupón. Existe para que el repartidor pueda
+     * EXPLICAR el total en la puerta: con un descuento, subtotal + envío no da
+     * el total, y un repartidor que ve ese agujero asume que la pantalla está
+     * mal y cobra el subtotal.
+     */
+    discountCents: number
     deliveryFeeCents: number
     totalCents: number
     currency: string
@@ -749,6 +756,21 @@ export type PricedItem = {
 export type PricedCart = {
   items: PricedItem[]
   subtotalCents: number
+  /**
+   * **Invariante: `totalCents === subtotalCents - discountCents`, siempre.**
+   *
+   * Es el total del CARRITO: el envío se suma un nivel más arriba, en el pedido
+   * (`orders_total_is_subtotal_minus_discount_plus_delivery_check` es el que
+   * cierra ahí). Sin cupón coincide con `subtotalCents`, que es lo que valía
+   * antes de este feature.
+   *
+   * ⚠️ Se escribe como invariante porque ya se rompió una vez: al componer el
+   * `PricedCart` con el descuento se agregó `discountCents` y **no** se
+   * actualizó este campo, así que la cotización devolvía el total SIN descontar
+   * mientras informaba un descuento al lado. No falla nada —los dos números son
+   * válidos por separado— y la vista, a la que se le prohíbe calcular el
+   * descuento por su cuenta, mostraba el total de antes del cupón.
+   */
   totalCents: number
   basePrepMinutes: number
   /**
@@ -1085,6 +1107,31 @@ export type Coupon = {
 }
 
 /**
+ * Por qué se rechazó un cupón, en forma legible POR LA MÁQUINA.
+ *
+ * **Existe porque dos motivos comparten a propósito el mismo texto para el
+ * cliente**: "no existe" y "está pausado/borrador" dicen los dos *"Ese código no
+ * existe o ya no está disponible"*, para no confirmarle a quien está sondeando
+ * que un código existe. Pero del lado del servidor hay que distinguirlos igual,
+ * porque el balde `coupon_check:ip` se consume **solo** cuando el código no
+ * existe — cobrárselo a un cliente con un cupón real pero apagado es
+ * rate-limitearlo de su propio checkout.
+ *
+ * ⚠️ **NUNCA viaja al browser.** Va al lado de `CouponAppliedQuote`, no adentro:
+ * mandarlo en la cotización reabriría exactamente el oráculo que el texto
+ * compartido cierra. Ver `CouponValidation` en `coupon.model.ts`.
+ */
+export type CouponRejectionCode =
+  | 'not_found'
+  | 'inactive'
+  | 'not_started'
+  | 'expired'
+  | 'min_subtotal'
+  | 'payment_method'
+  | 'exhausted'
+  | 'phone_limit'
+
+/**
  * El resultado de intentar aplicar un código, tal como viaja en la cotización.
  *
  * El rechazo es DATO, no excepción: el checkout tiene que poder mostrar el
@@ -1158,7 +1205,18 @@ export type CampaignPreview = {
  */
 export type CampaignStatus = 'queued' | 'sending' | 'sent' | 'stopped' | 'failed'
 
-export type CampaignStoppedReason = 'coupon_expired' | 'coupon_exhausted' | 'coupon_paused'
+/**
+ * Los tres primeros son del CUPÓN: la oferta dejó de valer. El cuarto no —
+ * `no_recipients` es que al momento de drenar no quedaba nadie elegible (todos
+ * se dieron de baja, o perdieron su fila del padrón, entre el encolado y el
+ * envío). Existe para que ese caso no se reporte como `sent`: una campaña verde
+ * con `sentCount = 0` muestra el número real y transmite lo contrario.
+ */
+export type CampaignStoppedReason =
+  | 'coupon_expired'
+  | 'coupon_exhausted'
+  | 'coupon_paused'
+  | 'no_recipients'
 
 export type CouponCampaign = {
   id: number
@@ -1191,13 +1249,27 @@ export type CouponCampaign = {
  */
 export type CouponChangeKind = 'create' | 'activate' | 'escalate' | 'reduce'
 
-/** Una fila de la lista de canjes del cupón. Solo canjes CONFIRMADOS. */
+/**
+ * Una fila de la lista de canjes del cupón.
+ *
+ * Trae los TRES estados del libro mayor, no solo `redeemed`, y ahí está la
+ * diferencia con `CouponStats`: las métricas son resultado y cuentan solo
+ * canjes confirmados; esta lista es DIAGNÓSTICO. Es la única forma de que el
+ * dueño entienda por qué la columna "Usos" marca 7 de 50 cuando hay 5 canjes:
+ * dos están en vuelo. Y un `released` con su motivo explica un cupo que volvió.
+ *
+ * Los liberados no van en el titular —son diagnóstico, no resultado— pero sí en
+ * la fila, con `StatusPill`.
+ */
 export type CouponRedemptionRow = {
   orderId: number
   shortCode: string
   customerName: string
   discountCents: number
   orderTotalCents: number
+  status: 'reserved' | 'redeemed' | 'released'
+  /** Solo cuando `status === 'released'`. */
+  releasedReason: 'expired' | 'cancelled_unpaid' | null
   createdAt: string
 }
 

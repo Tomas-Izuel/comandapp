@@ -5,6 +5,7 @@ import {
   decimalToCents,
   formatCents,
   formatCentsCompact,
+  percentOfCentsDown,
   scaleUpInt,
   sumCents,
 } from '@/lib/money'
@@ -45,6 +46,42 @@ describe('scaleUpInt — P-17: multiplicar por un decimal sin pasar por float', 
 
   it('valor 0 da 0 sin importar el factor', () => {
     expect(scaleUpInt(0, 2.5)).toBe(0)
+  })
+})
+
+describe('percentOfCentsDown — el descuento de un cupón: floor, NUNCA ceil', () => {
+  it('el caso citado del hallazgo: 15% de 833333 es 124999, no 125000 — un ceil acá recibiría CPN09 de create_order', () => {
+    expect(percentOfCentsDown(833333, 15)).toBe(124999)
+    // El valor exacto tiene resto (124999.95): un ceil ingenuo redondearía a
+    // 125000, que es justo el número que la base rechazaría con CPN09 por no
+    // coincidir con lo que ella misma calcula con división entera.
+    expect(Math.ceil((833333 * 15) / 100)).toBe(125000)
+  })
+
+  it('cuando la división es exacta, floor y ceil coinciden (no hay resto que perder)', () => {
+    expect(percentOfCentsDown(10000, 15)).toBe(1500)
+  })
+
+  it('percent en el extremo inferior (1%) redondea para abajo', () => {
+    expect(percentOfCentsDown(999, 1)).toBe(9) // 9.99 -> 9
+  })
+
+  it('percent en el extremo superior (100%) devuelve el monto entero', () => {
+    expect(percentOfCentsDown(54321, 100)).toBe(54321)
+  })
+
+  it('cents = 0 da 0 sin importar el percent', () => {
+    expect(percentOfCentsDown(0, 50)).toBe(0)
+  })
+
+  it('un monto grande (varios millones de centavos) no pierde precisión por floats', () => {
+    // 12_345_678 * 33 / 100 = 4_074_073.74 -> 4_074_073
+    expect(percentOfCentsDown(12_345_678, 33)).toBe(4_074_073)
+  })
+
+  it('opera en enteros, no en el punto flotante de percent: percent no entero se trunca, no se redondea', () => {
+    // Math.trunc(percent) en la implementación: un 15.9 se trata como 15, nunca 16.
+    expect(percentOfCentsDown(10000, 15.9)).toBe(percentOfCentsDown(10000, 15))
   })
 })
 

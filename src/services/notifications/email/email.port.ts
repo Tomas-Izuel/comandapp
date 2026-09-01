@@ -42,6 +42,14 @@ export type EmailVars = {
   items: { name: string; quantity: number; totalCents: number; options?: string[] }[]
   subtotalCents: number
   totalCents: number
+  /**
+   * Solo presentes en un pedido con cupón aplicado, y solo `order_receipt` los
+   * usa (`order_ready` no lleva importes). Opcionales porque la mayoría de los
+   * pedidos no tiene cupón — la plantilla decide mostrar la línea con
+   * `discountCents > 0`, nunca con la sola presencia del campo (CPN, §5.14.4).
+   */
+  discountCents?: number
+  couponCode?: string
 }
 
 export interface EmailSender {

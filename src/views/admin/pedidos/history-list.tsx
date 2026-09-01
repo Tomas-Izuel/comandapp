@@ -324,6 +324,15 @@ export function OrderHistoryList({ orders, timezone }: { orders: Order[]; timezo
                         </td>
                         <td className="text-foreground truncate px-3 py-2.5 text-right font-semibold lg:px-4 lg:py-3 lg:text-base">
                           <Price cents={order.totalCents} currency={order.currency} />
+                          {/* Mismo criterio que la línea de envío de abajo: el total YA
+                              está neto del descuento (es lo que se cobró), esto es solo
+                              la aclaración de cuánto de la diferencia es el cupón. Sin
+                              cupón la fila no cambia en nada — `discountCents` es 0. */}
+                          {order.discountCents > 0 ? (
+                            <span className="text-muted-foreground block text-[0.6875rem] font-normal normal-case tracking-normal">
+                              {order.couponCodeSnapshot} −<Price cents={order.discountCents} currency={order.currency} />
+                            </span>
+                          ) : null}
                           {/* El total YA incluye el envío (es plata real, se cobró);
                               esto es solo la aclaración de cuánto de ese total es
                               flete, para no tener que abrir el pedido a mirarlo. */}

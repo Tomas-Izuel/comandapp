@@ -175,8 +175,26 @@ function timeValue(v: string | null, whenNull: number): number {
  * grant para `authenticated`.
  */
 export function requiresConfirmation(current: CouponShape, next: CouponShape): boolean {
-  // Encender o reencender. Apagar (a `paused` o `draft`) no está acá.
-  if (next.status === 'active' && current.status !== 'active') return true
+  // **Si el resultado del cambio NO es un cupón vivo, no hay nada que
+  // confirmar.** Un `draft` o un `paused` no expone plata: se puede subir al 90%
+  // con tope infinito y no le sirve a nadie hasta activarlo, y activarlo pide
+  // código con la forma NUEVA. Es lo que sostiene "el borrador es gratis e
+  // ilimitado", que es a su vez lo que hace tolerable el segundo factor —
+  // cobrarle un mail a cada corrección de un borrador dejaría el flujo normal en
+  // un código por edición en vez de uno por cupón.
+  //
+  // Cubre además el caso de pausar y editar en la misma acción: el resultado es
+  // un cupón apagado, o sea una de-escalación, y apagar nunca pide código.
+  //
+  // Era una laguna de §5.11.3 que el plan no cerraba. La resolvió T1B por
+  // inferencia en su acción y se confirma acá, en el contrato, porque tenerlo en
+  // un solo lado era una divergencia con consecuencia visible: el aviso al pie
+  // de la hoja diría "este cambio pide un código por mail" y después la acción
+  // guardaría sin pedirlo.
+  if (next.status !== 'active') return false
+
+  // Encender o reencender. Apagar ya salió arriba.
+  if (current.status !== 'active') return true
 
   // El código es la llave. Cambiarlo es ponerle una nueva a la misma plata.
   if (next.code !== current.code) return true

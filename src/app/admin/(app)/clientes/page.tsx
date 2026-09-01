@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 import { resolveAdminSession } from '@/controllers/admin.controller'
 import { getCustomerDirectoryForStore } from '@/controllers/customers.controller'
+import { getCouponsForStore } from '@/controllers/marketing.controller'
 import { CustomerDirectoryView } from '@/views/admin/clientes/customer-directory'
 
 // Mismo sufijo que `admin/acceso/page.tsx` ("Pedir acceso — Panel del
@@ -28,7 +29,21 @@ export default async function ClientesPage() {
   if (session.status !== 'ok') redirect('/admin/acceso')
   if (session.role !== 'owner') redirect('/admin')
 
-  const directory = await getCustomerDirectoryForStore(session.store.id)
+  // Los cupones viajan con el padrón porque el botón de WhatsApp de cada fila
+  // ofrece mandar uno, y ése es el ÚNICO camino por el que un cupón llega a un
+  // cliente sin gastar cupo de mail (§5.5.1). A 15 mails de campaña por día, es
+  // el que más se va a usar.
+  //
+  // En paralelo: son dos lecturas independientes y la del padrón es la lenta.
+  const [directory, coupons] = await Promise.all([
+    getCustomerDirectoryForStore(session.store.id),
+    getCouponsForStore(session.store.id),
+  ])
+
+  // El filtro es por `status`, no por `couponState()`: acá alcanza con lo que el
+  // dueño prendió. Un cupón vencido o agotado igual no serviría, pero eso lo
+  // decide el menú, que ya tiene los contadores y las fechas en la fila.
+  const activeCoupons = coupons.filter((c) => c.status === 'active')
 
   return (
     <CustomerDirectoryView
@@ -38,6 +53,7 @@ export default async function ClientesPage() {
       timezone={session.store.timezone}
       currency={session.store.currency}
       directory={directory}
+      activeCoupons={activeCoupons}
     />
   )
 }

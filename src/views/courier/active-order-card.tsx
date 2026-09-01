@@ -115,6 +115,21 @@ export function ActiveOrderCard({
                 <span className="text-muted-foreground">Pedido</span>
                 <Price cents={order.collect.subtotalCents} currency={order.collect.currency} className="tabular" />
               </div>
+              {/*
+                Sin código acá: `courier_queue` solo manda importes en `collect`,
+                nunca `couponCodeSnapshot` (el repartidor no necesita saber CUÁL
+                cupón, solo que hubo uno y cuánto restó — es lo que le permite
+                explicar el número en la puerta sin llamar al local). Etiqueta
+                genérica a propósito, no inventada: no hay dato para mostrar más.
+              */}
+              {order.collect.discountCents > 0 ? (
+                <div className="flex items-baseline justify-between">
+                  <span className="text-muted-foreground">Descuento</span>
+                  <span className="tabular">
+                    −<Price cents={order.collect.discountCents} currency={order.collect.currency} />
+                  </span>
+                </div>
+              ) : null}
               <div className="flex items-baseline justify-between">
                 <span className="text-muted-foreground">Envío</span>
                 <Price cents={order.collect.deliveryFeeCents} currency={order.collect.currency} className="tabular" />

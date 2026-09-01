@@ -12,14 +12,27 @@ process.env.CRON_SECRET = 'cron-secret'
 
 /**
  * `confirmPendingChangeAction` (`admin.actions.ts`), rama
- * `courier_collects_payment` — el candado de 6 dígitos que confirma quién
- * cobra en la puerta. El pipeline de ajustes-por-secciones movió ese campo a
- * la sub-ruta `/admin/ajustes/pedidos`, y `revalidatePath('/admin/ajustes')`
+ * `courier_payment_policy` — el candado de 6 dígitos que confirma quién cobra
+ * en la puerta. El pipeline de ajustes-por-secciones movió ese campo a la
+ * sub-ruta `/admin/ajustes/pedidos`, y `revalidatePath('/admin/ajustes')`
  * (sin `'layout'`) NO invalida una sub-ruta: la confirmación aplicaba en la
  * base pero el switch seguía mostrando el valor viejo hasta un refresh
  * manual. El fix fue agregar `'layout'` como segundo argumento — este archivo
  * es lo que prueba que sigue ahí, porque un `revalidatePath` sin segundo
  * argumento compila igual y no falla ningún test que solo mire `res.ok`.
+ *
+ * ⚠️ El kind real de este cambio, leído de `PendingChangeKind`
+ * (`store-pending-change.model.ts`), es `'courier_payment_policy'` —
+ * `'courier_collects_payment'` NO EXISTE como kind, es el nombre de la
+ * COLUMNA que esta rama escribe en `stores`. Esta suite mockeaba ese nombre
+ * inventado y pasaba igual, porque `confirmPendingChangeAction` no tenía
+ * guarda: cualquier kind desconocido caía en el branch por defecto y escribía
+ * `courier_collects_payment` igual. Cuando la migración de cupones ensanchó
+ * el CHECK de `kind` con `'coupon'`, ese fall-through pasó a poder apagar el
+ * cobro en la puerta sin que nadie lo pidiera. Ya está cerrado en
+ * `admin.actions.ts` (un kind sin manejar tira) — el test de abajo,
+ * "un kind sin manejar tira y no escribe ninguna columna de stores", es el
+ * que debería haber atajado esto desde el principio.
  */
 const {
   requireStoreMembershipMock,
@@ -77,7 +90,7 @@ beforeEach(() => {
   requireStoreMembershipMock.mockReset().mockResolvedValue({ userId: 'owner-uid', role: 'owner' })
   consumePendingChangeMock.mockReset().mockResolvedValue({
     id: 99,
-    kind: 'courier_collects_payment',
+    kind: 'courier_payment_policy',
     payload: { courierCollectsPayment: true },
   })
   adminEqMock.mockReset().mockResolvedValue({ error: null })
@@ -87,7 +100,7 @@ beforeEach(() => {
   revalidatePathMock.mockReset()
 })
 
-describe('confirmPendingChangeAction — rama courier_collects_payment', () => {
+describe('confirmPendingChangeAction — rama courier_payment_policy', () => {
   it('revalida "/admin/ajustes" con el segundo argumento "layout" — sin esto la sub-ruta /pedidos no se invalida', async () => {
     const res = await confirmPendingChangeAction(7, 99, '123456')
 
@@ -123,5 +136,31 @@ describe('confirmPendingChangeAction — rama courier_collects_payment', () => {
 
     expect(res.ok).toBe(true)
     expect(revalidatePathMock).toHaveBeenCalledExactlyOnceWith('/admin/pagos')
+  })
+
+  /**
+   * El test que faltaba, y el que habría atajado el bug real: un `kind` sin
+   * rama en ESTA acción — `'coupon'` es el caso concreto que lo disparó, un
+   * kind real que existe en `PendingChangeKind` desde la migración de cupones
+   * pero que `confirmPendingChangeAction` nunca manejó (los cupones confirman
+   * su propio segundo factor en `marketing.actions.ts`). Antes del guard, esto
+   * caía en el default implícito y hacía `Boolean(undefined)` sobre
+   * `courierCollectsPayment` → escribía `false` en `stores` sin que nadie lo
+   * pidiera. Ahora tiene que tirar, y sobre todo: NUNCA debe llegar a
+   * `admin.from('stores').update(...)`.
+   */
+  it('un kind sin manejar (p. ej. "coupon", que existe pero es de otra acción) tira y no escribe ninguna columna de stores', async () => {
+    consumePendingChangeMock.mockResolvedValue({
+      id: 101,
+      kind: 'coupon',
+      payload: { couponId: 5 },
+    })
+
+    const res = await confirmPendingChangeAction(7, 101, '123456')
+
+    expect(res.ok).toBe(false)
+    expect(adminFromMock).not.toHaveBeenCalledWith('stores')
+    expect(adminUpdateMock).not.toHaveBeenCalled()
+    expect(revalidatePathMock).not.toHaveBeenCalled()
   })
 })

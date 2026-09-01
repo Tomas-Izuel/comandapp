@@ -7,7 +7,7 @@ import { Panel, SearchField } from '@/views/shared/surfaces'
 import { EmptyState } from '@/views/shared/states'
 import { CustomerRow } from './customer-row'
 import { CustomerSheet } from './customer-sheet'
-import type { CustomerDirectory, StoreCustomer } from '@/models/types'
+import type { Coupon, CustomerDirectory, StoreCustomer } from '@/models/types'
 
 /** Cabecera de columnas, solo en `lg` — abajo la fila colapsa y las etiquetas van inline (ver `customer-row.tsx`). */
 function ColumnHeader() {
@@ -40,6 +40,7 @@ export function CustomerDirectoryView({
   timezone,
   currency,
   directory,
+  activeCoupons = [],
 }: {
   storeId: number
   storeName: string
@@ -47,6 +48,8 @@ export function CustomerDirectoryView({
   timezone: string
   currency: string
   directory: CustomerDirectory
+  /** Cupones que el menú de WhatsApp puede ofrecer. Vacío = el menú no aparece. */
+  activeCoupons?: Coupon[]
 }) {
   const router = useRouter()
   const [query, setQuery] = useState('')
@@ -114,6 +117,7 @@ export function CustomerDirectoryView({
                 customer={customer}
                 storeName={storeName}
                 storeSlug={storeSlug}
+                activeCoupons={activeCoupons}
                 currency={currency}
                 onOpenDetail={() => {
                   setSelectedId(customer.id)

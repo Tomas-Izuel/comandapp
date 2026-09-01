@@ -88,7 +88,16 @@ begin
     alter table public.coupons add constraint coupons_shape_check check (
       (discount_type = 'percentage'
          and percent between 1 and 100
-         and amount_off_cents is null)
+         and amount_off_cents is null
+         -- El SIGNO, no solo la presencia. `couponInputSchema` ya exige
+         -- `.positive()` en el borde de Zod, pero `service_role` no pasa por
+         -- Zod: una carga masiva o un segundo camino de escritura podría dejar
+         -- un 0 o un negativo acá, y `create_order` hace
+         -- `least(v_discount, max_discount_cents)` sin mirar el signo. El
+         -- resultado negativo reventaría contra
+         -- `coupon_redemptions.discount_cents >= 0` con un 23514 crudo, que es
+         -- exactamente lo que los marcadores CPN0x existen para evitar.
+         and (max_discount_cents is null or max_discount_cents > 0))
       or (discount_type = 'fixed'
          and amount_off_cents > 0
          and percent is null
@@ -298,6 +307,27 @@ as $$
 declare
   v_coupon_id bigint := coalesce(new.coupon_id, old.coupon_id);
 begin
+  -- ⚠️ EL LOCK VA ANTES DEL RECÁLCULO, Y NO ES DEFENSA EN PROFUNDIDAD.
+  --
+  -- Bajo Read Committed, un `UPDATE ... FROM (subquery)` que se bloquea
+  -- esperando la fila de `coupons` re-evalúa por EvalPlanQual **solo** la
+  -- condición sobre la fila objetivo: la subquery contra `coupon_redemptions`
+  -- ya quedó fijada con el snapshot de ANTES de bloquearse. O sea que el
+  -- recálculo escribe un conteo viejo.
+  --
+  -- Escenario concreto: T1 (`create_order` con el cupón X) tiene el lock de esa
+  -- fila vía `enforce_coupon_redemption` y no commiteó. T2 (la cocina cancela
+  -- otro pedido del mismo cupón) entra acá, se bloquea, y su conteo quedó sin
+  -- la reserva de T1. T1 commitea, T2 se destraba y **pisa los contadores sin
+  -- la reserva de T1**. El conteo queda bajo, y el siguiente recálculo correcto
+  -- puede toparse con `coupons_within_cap_check` y abortar una transición
+  -- legítima de cocina con un 23514.
+  --
+  -- Con el lock tomado explícitamente antes, la sentencia siguiente arranca su
+  -- snapshot recién después de la espera, así que ve todo lo commiteado
+  -- mientras esperaba.
+  perform 1 from public.coupons where id = v_coupon_id for update;
+
   update public.coupons c
      set reserved_count = agg.reserved,
          redeemed_count = agg.redeemed
@@ -357,9 +387,32 @@ begin
        and status   = 'reserved';
 
   elsif new.status = 'cancelled' and new.paid_at is null then
+    -- QUIÉN canceló, no solo QUE se canceló.
+    --
+    -- El CHECK declara dos motivos y hasta acá uno era inalcanzable: toda
+    -- liberación quedaba `cancelled_unpaid`, así que un carrito abandonado que
+    -- barrió el cron y una cancelación a mano del mostrador se leían idénticos
+    -- en la traza. Es justo la pregunta que la lista de canjes existe para
+    -- contestar: ¿la promoción se está abandonando sola, o el staff la está
+    -- cancelando?
+    --
+    -- El discriminador es `auth.uid()`, que es null para `service_role`. Los
+    -- únicos caminos del servidor que cancelan un pedido impago son
+    -- `expire_pending_orders` (el barrido de abandonados) y la conciliación:
+    -- los dos son "venció" en sentido de producto. El staff cancela con el
+    -- cliente de SESIÓN —`orders` tiene `grant update (status)` para
+    -- `authenticated`— así que ahí sí hay uid.
+    --
+    -- El límite, dicho con los ojos abiertos: si algún día aparece OTRO camino
+    -- de servidor que cancele un pedido impago y no sea un vencimiento, va a
+    -- quedar etiquetado `expired`. Se prefiere eso a la alternativa, que era
+    -- que `expired` no existiera nunca. `expire_pending_orders` NO se toca.
     update public.coupon_redemptions
        set status          = 'released',
-           released_reason = 'cancelled_unpaid',
+           released_reason = case when (select auth.uid()) is null
+                                    then 'expired'
+                                    else 'cancelled_unpaid'
+                              end,
            released_at     = now()
      where order_id = new.id
        and status   = 'reserved';
@@ -403,10 +456,16 @@ create table if not exists public.coupon_campaigns (
   -- `stopped` = la OFERTA dejó de valer. Distinto de `failed`, que es que falló
   -- lo NUESTRO y conviene reintentar. Enum cerrado y no texto libre: es lo que
   -- la pantalla traduce a una frase, y un texto libre se mostraría crudo.
+  -- `no_recipients` no es un motivo de cupón: es que al momento de drenar no
+  -- quedaba nadie a quien mandarle (todos se dieron de baja, o perdieron su fila
+  -- del padrón, entre el encolado y el envío). Existe para que ese caso no se
+  -- reporte como `sent`: una campaña verde con `sent_count = 0` es la misma
+  -- falla silenciosa-con-cara-de-éxito que ya se cerró en settle.
   stopped_reason          text   check (stopped_reason is null
                                         or stopped_reason in ('coupon_expired',
                                                               'coupon_exhausted',
-                                                              'coupon_paused')),
+                                                              'coupon_paused',
+                                                              'no_recipients')),
   recipients_total        int    not null default 0 check (recipients_total >= 0),
   sent_count              int    not null default 0 check (sent_count >= 0),
   failed_count            int    not null default 0 check (failed_count >= 0),
@@ -1803,10 +1862,17 @@ begin
    where r.sent_at >= v_day_start;
 
   v_remaining := p_budget - v_sent_today;
-  if v_remaining <= 0 then
-    return;
-  end if;
 
+  -- ⚠️ LA LIMPIEZA VA ANTES DEL CHEQUEO DE PRESUPUESTO, A PROPÓSITO.
+  --
+  -- Ninguno de los dos `update` de acá gasta un mail: uno cierra
+  -- destinatarios que agotaron los reintentos y el otro cierra la campaña que
+  -- se quedó sin cola. Si vivieran después del `return` por presupuesto
+  -- agotado, no correrían nunca en el mismo día en que hubo un envío — y el
+  -- chunk ES el presupuesto (15), así que el primer envío exitoso del día lo
+  -- agota de inmediato. El dueño vería una campaña "enviando" durante un día
+  -- entero después de que en la práctica ya terminó.
+  --
   -- Los que agotaron los reintentos dejan de bloquear su chunk. Sin esto un
   -- mail que Resend rechaza para siempre congela la campaña entera: el chunk
   -- nunca se vacía y los chunks siguientes nunca se reclaman.
@@ -1814,6 +1880,53 @@ begin
      set status = 'failed'
    where r.status = 'queued'
      and r.attempts >= p_max_attempts;
+
+  -- Y el cierre de la campaña que ese update acaba de dejar sin cola.
+  --
+  -- Es el agujero que `settle_campaign_recipient` NO puede tapar, y vale
+  -- escribir por qué: el paso a `failed` de la última fila ocurre ACÁ, en el
+  -- claim, no en un settle. Después de eso no hay ningún settle más que
+  -- disparar, así que la campaña se quedaba en `sending` para siempre —
+  -- indistinguible de una que todavía está drenando, y con la barra de
+  -- progreso congelada en el 60%.
+  --
+  -- Mismo criterio que el resto del feature: los contadores se RECALCULAN
+  -- desde `campaign_recipients`, nunca se deducen de lo que acabamos de tocar.
+  -- Mismo motivo que el lock de sync_coupon_counters: sin él, este recálculo
+  -- puede escribir un conteo fijado antes de esperar el lock de la fila.
+  perform 1 from public.coupon_campaigns cc
+   where cc.status in ('queued', 'sending') for update;
+
+  update public.coupon_campaigns cc
+     set sent_count    = agg.sent,
+         failed_count  = agg.failed,
+         skipped_count = agg.skipped,
+         status        = case
+                           when agg.sent   > 0 then 'sent'
+                           when agg.failed > 0 then 'failed'
+                           -- Ni enviados ni fallados: nadie era elegible.
+                           else 'stopped'
+                        end,
+         stopped_reason = case when agg.sent = 0 and agg.failed = 0 then 'no_recipients' end,
+         finished_at   = now()
+    from (
+      select r.campaign_id,
+             count(*) filter (where r.status = 'sent')::int    as sent,
+             count(*) filter (where r.status = 'failed')::int  as failed,
+             count(*) filter (where r.status = 'skipped')::int as skipped,
+             count(*) filter (where r.status = 'queued')::int  as queued
+        from public.campaign_recipients r
+       group by r.campaign_id
+    ) agg
+   where cc.id = agg.campaign_id
+     and cc.status in ('queued', 'sending')
+     and agg.queued = 0;
+
+  -- Recién ACÁ el presupuesto: la limpieza de arriba ya corrió, así que un día
+  -- con el cupo agotado igual cierra lo que haya que cerrar.
+  if v_remaining <= 0 then
+    return;
+  end if;
 
   -- La campaña más vieja que todavía tiene cola. `skip locked` para que dos
   -- ticks solapados trabajen en campañas distintas en vez de esperarse.
@@ -1898,6 +2011,42 @@ begin
    limit 1;
 
   if v_chunk is null then
+    -- Sin chunk reclamable, y hay dos motivos posibles que NO son lo mismo:
+    --
+    --  a) La cola tiene filas pero todavía no cumplieron la espera de
+    --     reintento. Se vuelve y el próximo tick la agarra.
+    --  b) La cola quedó VACÍA justo ahora, porque el re-chequeo de la baja de
+    --     unas líneas más arriba marcó `skipped` a todos los que quedaban.
+    --
+    -- El bloque de limpieza del principio de la función no puede cubrir (b):
+    -- corre ANTES de ese re-chequeo, cuando las filas todavía estaban
+    -- `queued`. Sin cerrar acá, una campaña cuyo segmento entero se dio de baja
+    -- entre el encolado y el envío se queda en `queued` PARA SIEMPRE, y el
+    -- dueño la ve "esperando" sin que nunca haya nada que esperar.
+    update public.coupon_campaigns cc
+       set sent_count     = agg.sent,
+           failed_count   = agg.failed,
+           skipped_count  = agg.skipped,
+           status         = case
+                              when agg.sent   > 0 then 'sent'
+                              when agg.failed > 0 then 'failed'
+                              else 'stopped'
+                            end,
+           stopped_reason = case when agg.sent = 0 and agg.failed = 0
+                                   then 'no_recipients' end,
+           finished_at    = now()
+      from (
+        select count(*) filter (where r.status = 'sent')::int    as sent,
+               count(*) filter (where r.status = 'failed')::int  as failed,
+               count(*) filter (where r.status = 'skipped')::int as skipped,
+               count(*) filter (where r.status = 'queued')::int  as queued
+          from public.campaign_recipients r
+         where r.campaign_id = v_campaign.id
+      ) agg
+     where cc.id = v_campaign.id
+       and cc.status in ('queued', 'sending')
+       and agg.queued = 0;
+
     return;
   end if;
 
@@ -1988,6 +2137,12 @@ begin
     return;
   end if;
 
+  -- Mismo lock explícito que sync_coupon_counters, y por lo mismo: un
+  -- `UPDATE ... FROM (subquery)` que espera el lock de la fila re-evalúa solo la
+  -- condición sobre `coupon_campaigns`, no la subquery contra
+  -- `campaign_recipients`, así que sin esto puede escribir un conteo viejo.
+  perform 1 from public.coupon_campaigns where id = v_campaign_id for update;
+
   -- Un fallo NO cierra la fila: la deja en `queued` con el error anotado y el
   -- contador de intentos ya subido por el claim. La cierra `claim` cuando los
   -- intentos se agotan, que es el único lugar donde "ya no vale la pena" es una
@@ -1996,7 +2151,35 @@ begin
      set sent_count    = agg.sent,
          failed_count  = agg.failed,
          skipped_count = agg.skipped,
-         status        = case when agg.queued = 0 then 'sent'    else cc.status end,
+         -- ⚠️ Cola vacía NO significa "enviada". Si todos los destinatarios
+         -- terminaron en `failed` (Resend rechazando, la key vencida, el
+         -- dominio caído), `queued` llega a 0 igual y un `then 'sent'` a secas
+         -- reportaría "campaña enviada" con sent_count = 0. El dueño vería una
+         -- campaña verde que no le llegó a nadie, que es la peor forma de
+         -- fallar: silenciosa y con cara de éxito.
+         status        = case
+                           when agg.queued > 0                  then cc.status
+                           when agg.sent   > 0                  then 'sent'
+                           when agg.failed > 0                  then 'failed'
+                           -- Ni enviados ni fallados: TODOS `skipped`. Se
+                           -- terminó sin mandar nada y sin que nada fallara,
+                           -- porque nadie del chunk seguía siendo elegible (se
+                           -- dieron de baja, o perdieron su fila del padrón,
+                           -- entre el encolado y el envío).
+                           --
+                           -- Antes esto decía `sent`, y el resultado era una
+                           -- campaña VERDE con `sent_count = 0`: el número real
+                           -- se mostraba, pero el estado no transmitía que
+                           -- nadie recibió nada. Es la misma falla
+                           -- silenciosa-con-cara-de-éxito que este mismo `case`
+                           -- ya cerró para los fallos.
+                           else 'stopped'
+                        end,
+         stopped_reason = case
+                            when agg.queued = 0 and agg.sent = 0 and agg.failed = 0
+                              then 'no_recipients'
+                            else cc.stopped_reason
+                          end,
          finished_at   = case when agg.queued = 0 then now()     else cc.finished_at end
     from (
       select count(*) filter (where r.status = 'sent')::int    as sent,
@@ -2098,6 +2281,18 @@ begin
     -- La traza al revés: desde el cupón, los pedidos que lo usaron. Es la mitad
     -- que faltaba de la trazabilidad bidireccional; la otra es
     -- `orders.coupon_code_snapshot`.
+    --
+    -- ⚠️ ACÁ NO SE FILTRA POR `redeemed`, y es la diferencia con `stats`.
+    -- Las MÉTRICAS cuentan solo canjes confirmados (facturación sobre un pedido
+    -- que todavía puede morir es un número falso). La LISTA es diagnóstico: el
+    -- dueño necesita ver los que están en vuelo y los que se liberaron, con el
+    -- motivo, porque es la única forma de entender por qué el cupo ocupado no
+    -- coincide con los canjes. Filtrarla igual que las métricas dejaba los
+    -- `released` invisibles y la columna "Usos" sin explicación posible.
+    --
+    -- Por eso viajan `status` y `releasedReason`: la fila los usa para el
+    -- StatusPill. Los liberados NO van en el titular —son diagnóstico, no
+    -- resultado— pero tienen que estar en la lista.
     'recentRedemptions', coalesce((
       select jsonb_agg(t order by t."createdAt" desc)
         from (
@@ -2106,10 +2301,12 @@ begin
                  o.customer_name       as "customerName",
                  r.discount_cents      as "discountCents",
                  o.total_cents         as "orderTotalCents",
+                 r.status              as "status",
+                 r.released_reason     as "releasedReason",
                  r.created_at          as "createdAt"
             from public.coupon_redemptions r
             join public.orders o on o.id = r.order_id
-           where r.coupon_id = p_coupon_id and r.status = 'redeemed'
+           where r.coupon_id = p_coupon_id
            order by r.created_at desc
            limit 20
         ) t), '[]'::jsonb)

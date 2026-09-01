@@ -8,6 +8,7 @@ import { log } from '@/lib/log'
 import { formatCentsCompact, scaleUpInt, sumCents } from '@/lib/money'
 import { ORDER_RECEIPTS_BUCKET, orderReceiptPath, productImageUrl } from '@/lib/storage'
 import { canCollectPayment } from '@/lib/store-availability'
+import { validateCouponForCart } from '@/models/coupon.model'
 import { getPublicBankAccount } from '@/models/store-bank-account.model'
 import {
   commercialNightOf,
@@ -21,6 +22,8 @@ import { toStore, type StoreRow } from '@/models/mappers/store.mapper'
 import {
   ACTIVE_STATUSES,
   COOKING_STATUSES,
+  COUPON_ERROR_CODES,
+  COUPON_REJECTION_MESSAGES,
   IDEMPOTENCY_INDEX,
   ONE_APPROVED_PAYMENT_INDEX,
   ORDER_STATUSES,
@@ -40,6 +43,7 @@ import {
   type PaymentStatus,
 } from '@/models/schemas/order.schema'
 import type {
+  CouponAppliedQuote,
   DeliveryMethod,
   EtaEstimate,
   Order,
@@ -289,6 +293,136 @@ function extractLiveMode(raw: unknown): boolean | null {
     return typeof value === 'boolean' ? value : null
   }
   return null
+}
+
+// ---------------------------------------------------------------------------
+// 0-bis. Cupón — resuelve el descuento contra UN carrito ya cotizado, para los
+// dos momentos del checkout anónimo (cotización y commit).
+//
+// La VALIDACIÓN en sí (CPN01..CPN08, el orden exacto de `create_order`) vive en
+// `validateCouponForCart` de `coupon.model.ts` (T1B): es la MISMA función que
+// usa la cotización, así que el mensaje que ve el cliente acá es el que
+// recibiría si intentara pagar. Acá solo se la envuelve para: (a) extraer el
+// `discountCents` de la aplicación exitosa, y (b) decidir la señal interna
+// `coupon_check:ip` (§5.13), que `validateCouponForCart` no expone a propósito
+// —su contrato es `CouponAppliedQuote`, lo que VE el cliente— porque "no
+// existe" y "está pausado" comparten el mismo texto (anti-enumeración) y acá
+// hace falta distinguirlos igual.
+// ---------------------------------------------------------------------------
+
+export type CouponResolution = {
+  /** 0 si no se mandó código, o si el que se mandó se rechazó. */
+  discountCents: number
+  /** `null` si no se intentó ningún código. Es lo que ve el cliente. */
+  quote: CouponAppliedQuote | null
+  /**
+   * Señal INTERNA para decidir el balde `coupon_check:ip` (§5.13). `true` SOLO
+   * cuando se mandó un código y NO EXISTE ninguno con ese texto para esta
+   * tienda. Nunca llega al cliente.
+   */
+  codeNotFound: boolean
+}
+
+/**
+ * Envoltorio de `validateCouponForCart` (T1B) para los dos momentos del
+ * checkout anónimo:
+ *  - Fase 1 (cotización, `GET /api/orders` → `priceCartForStore`): SIN
+ *    `customerPhoneE164` —el browser todavía no lo mandó—, así que el tope por
+ *    teléfono (CPN06) lo aplica recién `create_order` en el commit. Es la
+ *    razón por la que la cotización puede mostrar "aplicado" y el POST igual
+ *    rechazar con "Ya usaste ese cupón".
+ *  - Fase 2 (commit, `createOrder`): CON el teléfono ya normalizado por
+ *    `phoneSchema`. El `discountCents` que devuelve ACÁ es el que viaja a la
+ *    RPC como `discount_cents`: si no coincide con lo que la base vuelve a
+ *    calcular bajo `for update`, la RPC rechaza con CPN09 — bug nuestro, nunca
+ *    un `DomainError`.
+ *
+ * NUNCA TIRA: un código roto no puede dejar la cotización sin precio (§5.9.1).
+ * Convertir un rechazo en `DomainError` es responsabilidad del LLAMADOR
+ * (`createOrder` sí lo hace en el commit; la cotización no).
+ */
+export async function resolveCoupon(params: {
+  storeId: number
+  code: string | undefined
+  subtotalCents: number
+  paymentMethod: PaymentMethod
+  customerPhoneE164?: string
+}): Promise<CouponResolution> {
+  const { storeId, code, subtotalCents, paymentMethod, customerPhoneE164 } = params
+  if (!code) return { discountCents: 0, quote: null, codeNotFound: false }
+
+  const { quote, reasonCode } = await validateCouponForCart({
+    storeId,
+    code,
+    subtotalCents,
+    paymentMethod,
+    customerPhoneE164,
+  })
+
+  if (quote.status === 'applied') {
+    return { discountCents: quote.discountCents, quote, codeNotFound: false }
+  }
+
+  // `reasonCode` distingue `not_found` de `inactive`, que comparten el MISMO
+  // texto de cara al cliente (anti-enumeración). Es un valor de un enum cerrado
+  // y no una comparación contra el mensaje: la versión anterior de esto
+  // matcheaba el texto entre dos módulos, así que una corrección de copy en uno
+  // solo dejaba `codeNotFound` en `false` para siempre, el balde
+  // `coupon_check:ip` no se cobraba nunca, y el oráculo de enumeración volvía a
+  // abrirse SIN QUE NADA FALLARA. Se ahorra además una consulta extra en el
+  // camino caliente: un cliente tipeando un código mal.
+  return { discountCents: 0, quote, codeNotFound: reasonCode === 'not_found' }
+}
+
+/**
+ * Los ocho SQLSTATE que son un rechazo de NEGOCIO (CPN01..CPN08). CPN09/CPN10
+ * son un bug nuestro y se manejan aparte, nunca como `DomainError`.
+ */
+const COUPON_REJECTION_CODES: readonly string[] = [
+  COUPON_ERROR_CODES.notFound,
+  COUPON_ERROR_CODES.inactive,
+  COUPON_ERROR_CODES.notStarted,
+  COUPON_ERROR_CODES.expired,
+  COUPON_ERROR_CODES.exhausted,
+  COUPON_ERROR_CODES.phoneLimit,
+  COUPON_ERROR_CODES.minSubtotal,
+  COUPON_ERROR_CODES.paymentMethod,
+]
+
+function couponRejectionCodeOf(err: { code?: string } | null | undefined): string | undefined {
+  return err?.code && COUPON_REJECTION_CODES.includes(err.code) ? err.code : undefined
+}
+
+/**
+ * Traduce un SQLSTATE de cupón que llegó RECIÉN de la RPC (nunca de la
+ * pre-validación de acá, que ya cortó antes con el mismo texto) a un mensaje
+ * de interfaz. Es el camino de una CARRERA real: `resolveCoupon` validó hace
+ * un instante y algo cambió antes del `for update` de `create_order` (alguien
+ * más agotó el último lugar, el dueño pausó el cupón). No hay coupon row a
+ * mano en este punto —por eso los mensajes de mínimo/método de pago son
+ * genéricos acá y no repiten el monto exacto—, y está bien: es una carrera
+ * rarísima, nunca el camino normal.
+ */
+function couponRpcRejectionReason(code: string): string {
+  switch (code) {
+    case COUPON_ERROR_CODES.notFound:
+    case COUPON_ERROR_CODES.inactive:
+      return COUPON_REJECTION_MESSAGES.notFound
+    case COUPON_ERROR_CODES.notStarted:
+      return COUPON_REJECTION_MESSAGES.notStarted
+    case COUPON_ERROR_CODES.expired:
+      return COUPON_REJECTION_MESSAGES.expired
+    case COUPON_ERROR_CODES.exhausted:
+      return COUPON_REJECTION_MESSAGES.exhausted
+    case COUPON_ERROR_CODES.phoneLimit:
+      return COUPON_REJECTION_MESSAGES.phoneLimit
+    case COUPON_ERROR_CODES.minSubtotal:
+      return 'Ese cupón ya no aplica a este pedido.'
+    case COUPON_ERROR_CODES.paymentMethod:
+      return 'Ese cupón no aplica a este método de pago.'
+    default:
+      return COUPON_REJECTION_MESSAGES.notFound
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -637,11 +771,51 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
 
   const priced = await priceCart(store, parsed.items)
 
-  // El mínimo general se evalúa sobre el SUBTOTAL, no sobre el total con
-  // envío: un mínimo que se alcanza cobrando el delivery no es un mínimo.
+  // El mínimo general se evalúa sobre el SUBTOTAL SIN DESCUENTO (§5.9.3.1): un
+  // cupón no cambia lo que cuesta cocinar el pedido, así que no puede habilitar
+  // un pedido que el local no aceptaría de otro modo.
   if (priced.subtotalCents < store.minOrderCents) {
     throw new DomainError(`El pedido mínimo es de ${formatCentsCompact(store.minOrderCents, store.currency)}`)
   }
+
+  // -------------------------------------------------------------------------
+  // Cupón — se resuelve ACÁ, antes del envío: el mínimo de envío se mide SIN
+  // descuento (como el mínimo general, arriba) pero el envío GRATIS se mide
+  // CON descuento (§5.9.3.1) — regalar el envío por un subtotal que infló el
+  // cupón es pagar la misma promoción dos veces. `deliveryFeeFor`, más abajo,
+  // necesita el subtotal YA descontado.
+  //
+  // NO se corta el pedido acá si el cupón sale rechazado (docs/pipelines/
+  // 2026-08-31-clientes-y-cupones/03-review.md, Hallazgo 1 — BLOQUEANTE). Un
+  // `throw` en este punto corre ANTES de que `create_order` tenga oportunidad
+  // de resolver la idempotencia, que es la PRIMERA operación de su cuerpo. Con
+  // un cupón de `max_redemptions_per_phone: 1` (el default), el propio primer
+  // intento exitoso deja la reserva que hace que el reintento (misma
+  // `idempotencyKey`, por mala señal) vea "ya usaste este cupón" — un error
+  // sobre un pedido que ya existe y ya está pagado, sin haber llamado la RPC
+  // ni una vez.
+  //
+  // `discountCents` sale en 0 cuando el código no existe o quedó rechazado
+  // (contrato de `resolveCoupon`), así que acá solo se usa para calcular el
+  // total — nunca para decidir un corte. La RPC es la única autoridad real:
+  // resuelve la idempotencia primero (devuelve el pedido ya creado si la clave
+  // se repite, sin tocar un solo cupón) y, si es un pedido genuinamente nuevo
+  // con un código inválido, rechaza bajo `for update` con el CPN0x
+  // correspondiente — ese rechazo ya se traduce a `DomainError` más abajo
+  // (bloque "[CUPON] Defensa en profundidad").
+  // -------------------------------------------------------------------------
+  let discountCents = 0
+  if (parsed.couponCode) {
+    const resolution = await resolveCoupon({
+      storeId: store.id,
+      code: parsed.couponCode,
+      subtotalCents: priced.subtotalCents,
+      paymentMethod: parsed.paymentMethod,
+      customerPhoneE164: parsed.customerPhone,
+    })
+    discountCents = resolution.discountCents
+  }
+  const discountedSubtotalCents = priced.subtotalCents - discountCents
 
   // El envío se recalcula desde cero, igual que los ítems: el browser manda
   // el MÉTODO y la dirección, nunca el monto del envío.
@@ -652,6 +826,8 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
   if (isDelivery) {
     if (!store.delivery.enabled) throw new DomainError('Este local no hace envíos a domicilio')
 
+    // Mínimo de ENVÍO: SIEMPRE sobre el subtotal SIN descuento. El viaje
+    // cuesta lo mismo con cupón que sin cupón.
     if (priced.subtotalCents < store.delivery.minOrderCents) {
       const missingCents = store.delivery.minOrderCents - priced.subtotalCents
       throw new DomainError(
@@ -659,7 +835,8 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
       )
     }
 
-    deliveryFeeCents = deliveryFeeFor(store.delivery, priced.subtotalCents)
+    // Envío GRATIS: sobre el subtotal CON descuento (§5.9.3.1).
+    deliveryFeeCents = deliveryFeeFor(store.delivery, discountedSubtotalCents)
 
     if (isScheduled) {
       // Q2: política del dueño (¿se puede programar CON envío?) + realidad
@@ -709,10 +886,10 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
   // mismo criterio invertido que el trigger `enforce_order_rules`.
   const initialStatus: OrderStatus = parsed.paymentMethod === 'in_store' ? 'confirmed' : 'pending'
 
-  // `orders_total_is_subtotal_plus_delivery_check` es la red de seguridad: si
-  // acá se rompe la suma, el insert rebota con 23514 en vez de guardar un
-  // envío regalado en silencio.
-  const totalCents = priced.subtotalCents + deliveryFeeCents
+  // `orders_total_is_subtotal_minus_discount_plus_delivery_check` es la red de
+  // seguridad: si acá se rompe la suma, el insert rebota con 23514 en vez de
+  // guardar un envío (o un descuento) regalado en silencio.
+  const totalCents = discountedSubtotalCents + deliveryFeeCents
 
   const p_order = {
     store_id: store.id,
@@ -725,6 +902,11 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
     currency: store.currency,
     subtotal_cents: priced.subtotalCents,
     total_cents: totalCents,
+    // El código, nunca el monto de más: `create_order` vuelve a calcular
+    // `discount_cents` bajo lock y rechaza con CPN09 si no coincide con lo que
+    // mandamos acá — es la red que evita que un bug de TS regale plata.
+    coupon_code: parsed.couponCode ?? null,
+    discount_cents: discountCents,
     base_prep_minutes: priced.basePrepMinutes,
     demand_multiplier: demandMultiplier,
     eta_minutes: etaMinutes,
@@ -779,6 +961,25 @@ export async function createOrder(input: CreateOrderInput): Promise<{ order: Ord
     // de la función — nunca llega crudo al browser.
     if (isScheduledNightFull(rpcError)) {
       throw new DomainError('Esa noche ya está completa. Elegí otro día.')
+    }
+    // [CUPON] Defensa en profundidad: `resolveCoupon` ya validó el código un
+    // instante antes de armar `p_order`, así que llegar ACÁ significa una
+    // carrera real (alguien más agotó el último lugar, o el dueño lo pausó,
+    // entre esa lectura y el `for update` de la RPC) — no un bug de TS.
+    const couponRejectionCode = couponRejectionCodeOf(rpcError)
+    if (couponRejectionCode) {
+      throw new DomainError(couponRpcRejectionReason(couponRejectionCode))
+    }
+    // CPN09/CPN10: el descuento no coincidió entre TypeScript y Postgres, o
+    // llegó un descuento sin código que lo justifique. Es un bug NUESTRO —
+    // nunca del cliente— así que es un error interno (log + genérico), nunca
+    // un `DomainError` con el texto crudo de la constraint.
+    if (rpcError?.code === COUPON_ERROR_CODES.amountMismatch || rpcError?.code === COUPON_ERROR_CODES.missingCoupon) {
+      log.error(CTX, 'el descuento no coincidió entre TypeScript y Postgres (bug propio, revisar validateCouponForCart/percentOfCentsDown)', rpcError, {
+        storeId: store.id,
+        couponCode: parsed.couponCode,
+      })
+      throw new Error(`No se pudo crear el pedido: ${rpcError.message}`)
     }
     // La función ya resuelve la carrera de idempotencia sola (select antes del
     // insert, y de nuevo si el índice rebota con 23505); si igual llega acá con

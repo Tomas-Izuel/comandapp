@@ -6,6 +6,7 @@ import { useDraggable } from '@dnd-kit/core'
 import { AlertTriangle, Banknote, Bike, Bot, Landmark, Loader2, Undo2, X } from 'lucide-react'
 import { WhatsApp } from '@/components/ui/whatsapp'
 import { Panel, StatusPill } from '@/views/shared/surfaces'
+import { Price } from '@/views/shared/money'
 import { PaymentNotice } from '@/views/shared/order-status'
 import { Button } from '@/components/ui/button'
 import {
@@ -332,6 +333,38 @@ export function OrderCard({
       </ul>
 
       <div className="border-border flex flex-col gap-2 border-t px-4 py-3.5">
+        {/*
+          Sin descuento esta tarjeta no cambia en NADA — `discountCents` es 0 en
+          todo pedido sin cupón. Con descuento, quien cobra en el mostrador
+          necesita el desglose completo (no solo la línea del descuento):
+          el pedido nunca mostró subtotal ni total acá, así que sin las cuatro
+          líneas el "Total" de la caja no cierra con nada que la tarjeta diga.
+        */}
+        {order.discountCents > 0 ? (
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-lg px-3 py-2.5 text-sm">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-muted-foreground">Subtotal</span>
+              <Price cents={order.subtotalCents} currency={order.currency} />
+            </div>
+            <div className="flex items-baseline justify-between gap-3 font-medium">
+              <span className="min-w-0 truncate">Descuento {order.couponCodeSnapshot}</span>
+              <span className="tabular">
+                −<Price cents={order.discountCents} currency={order.currency} />
+              </span>
+            </div>
+            {order.deliveryFeeCents > 0 ? (
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-muted-foreground">Envío</span>
+                <Price cents={order.deliveryFeeCents} currency={order.currency} />
+              </div>
+            ) : null}
+            <div className="border-border flex items-baseline justify-between gap-3 border-t pt-1 text-base font-semibold">
+              <span>Total</span>
+              <Price cents={order.totalCents} currency={order.currency} exact />
+            </div>
+          </div>
+        ) : null}
+
         {order.paymentMethod === 'in_store' && !unpaidInStore ? (
           <StatusPill tone="done" className="self-start">
             Cobrado en el local

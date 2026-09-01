@@ -28,7 +28,18 @@ import type { Json } from '@/lib/supabase/database.types'
  * código de 6 dígitos sigue guardándose como HMAC, como siempre
  * (00-architecture.md §5.11).
  */
-export type PendingChangeKind = 'payment_credentials' | 'courier_payment_policy' | 'bank_account'
+export type PendingChangeKind =
+  | 'payment_credentials'
+  | 'courier_payment_policy'
+  | 'bank_account'
+  /**
+   * Activar un cupón, o cambiarlo de una forma que aumente la exposición de
+   * plata (`requiresConfirmation()` de `src/lib/coupon.ts` es el criterio).
+   *
+   * Es el PRIMER kind que puede tener más de una instancia viva por tienda, y
+   * por eso existe `subjectId`. Ver la nota de `createPendingChange`.
+   */
+  | 'coupon'
 
 /** Diez minutos: alcanza para ir al mail desde el celular y no tanto como para dejar el código dando vueltas. */
 const TTL_MINUTES = 10
@@ -53,6 +64,8 @@ export type PendingChange = {
   storeId: number
   kind: PendingChangeKind
   payload: PendingChangePayload
+  /** `null` para los tres kinds originales (una sola instancia por tienda). Para `coupon`, el id del cupón — hace falta para reenviar sin invalidar el pendiente de OTRO cupón (ver `createPendingChange`). */
+  subjectId: number | null
 }
 
 /**
@@ -86,24 +99,47 @@ function hashesMatch(a: string, b: string): boolean {
  * Crea la solicitud y devuelve el código EN CLARO, una sola vez, para que el
  * caller lo mande por mail. No queda en ningún lado más: en la fila va el HMAC.
  *
- * Invalida los pendientes anteriores del mismo `(storeId, kind)`. Sin eso se
- * acumulan códigos vivos: alguien que pide tres veces seguidas termina con tres
- * códigos válidos a la vez, y cada uno con sus propios 5 intentos.
+ * Invalida los pendientes anteriores del mismo `(storeId, kind, subjectId)`.
+ * Sin eso se acumulan códigos vivos: alguien que pide tres veces seguidas
+ * termina con tres códigos válidos a la vez, y cada uno con sus propios 5
+ * intentos.
+ *
+ * ⚠️ **`subjectId` no es un parámetro de conveniencia: sin él los cupones se
+ * pisan entre sí.** Los tres kinds originales tienen a lo sumo UNA cosa de esa
+ * clase por tienda (una credencial de MP, una política de cobro, una cuenta
+ * bancaria), así que invalidar por `(storeId, kind)` era exactamente correcto.
+ * Con cupones no: el dueño activa el cupón A, después el B, y la invalidación
+ * por `(storeId, 'coupon')` le mata el código de A **sin decirle nada**. El
+ * síntoma es "tipeé el código que me llegó y no funciona", indistinguible de un
+ * bug del segundo factor.
+ *
+ * ⚠️ Y va `.is('subject_id', null)`, nunca `.eq('subject_id', null)`: en
+ * PostgREST un `eq` contra null no matchea ninguna fila, así que la
+ * invalidación de los tres kinds originales dejaría de invalidar nada y
+ * volverían los códigos acumulados — en silencio, porque el update devolvería
+ * cero filas sin error.
  */
 export async function createPendingChange(p: {
   storeId: number
   userId: string
   kind: PendingChangeKind
   payload: PendingChangePayload
+  /** A qué entidad aplica. Hoy solo `coupon` lo usa; el resto va sin él. */
+  subjectId?: number
 }): Promise<{ id: number; code: string; expiresAt: string }> {
   const admin = createAdminClient()
 
-  const { error: supersedeError } = await admin
+  const supersede = admin
     .from('store_pending_changes')
     .update({ consumed_at: new Date().toISOString() })
     .eq('store_id', p.storeId)
     .eq('kind', p.kind)
     .is('consumed_at', null)
+
+  const { error: supersedeError } =
+    p.subjectId === undefined
+      ? await supersede.is('subject_id', null)
+      : await supersede.eq('subject_id', p.subjectId)
 
   if (supersedeError) {
     throw new Error(`No se pudo invalidar la solicitud anterior: ${supersedeError.message}`)
@@ -118,6 +154,7 @@ export async function createPendingChange(p: {
       store_id: p.storeId,
       requested_by: p.userId,
       kind: p.kind,
+      subject_id: p.subjectId ?? null,
       payload: p.payload,
       code_hash: hmacSha256(code),
       expires_at: expiresAt,
@@ -189,7 +226,7 @@ export async function consumePendingChange(p: {
     .update({ consumed_at: new Date().toISOString() })
     .eq('id', p.id)
     .is('consumed_at', null)
-    .select('kind, payload')
+    .select('kind, payload, subject_id')
     .maybeSingle()
 
   if (consumeError) throw new Error(`No se pudo confirmar el cambio: ${consumeError.message}`)
@@ -202,6 +239,7 @@ export async function consumePendingChange(p: {
     storeId: p.storeId,
     kind: consumed.kind as PendingChangeKind,
     payload: (consumed.payload ?? {}) as PendingChangePayload,
+    subjectId: consumed.subject_id,
   }
 }
 
@@ -219,7 +257,7 @@ export async function getLivePendingChange(p: {
 
   const { data, error } = await admin
     .from('store_pending_changes')
-    .select('id, store_id, kind, payload')
+    .select('id, store_id, kind, payload, subject_id')
     .eq('id', p.id)
     .eq('store_id', p.storeId)
     .eq('requested_by', p.userId)
@@ -235,5 +273,6 @@ export async function getLivePendingChange(p: {
     storeId: data.store_id,
     kind: data.kind as PendingChangeKind,
     payload: (data.payload ?? {}) as PendingChangePayload,
+    subjectId: data.subject_id,
   }
 }

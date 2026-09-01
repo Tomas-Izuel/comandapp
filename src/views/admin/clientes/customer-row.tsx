@@ -2,13 +2,11 @@
 
 import { Mail } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { WhatsApp } from '@/components/ui/whatsapp'
 import { Price } from '@/views/shared/money'
 import { StatusPill } from '@/views/shared/surfaces'
-import { whatsappHref } from '@/lib/whatsapp'
+import { CouponWhatsappMenu } from '@/views/admin/clientes/cupones/coupon-whatsapp-menu'
 import { relativeLastOrderLabel } from './format'
-import { buildCustomerWhatsappMessage } from './whatsapp-message'
-import type { StoreCustomer } from '@/models/types'
+import type { Coupon, StoreCustomer } from '@/models/types'
 
 /**
  * Botón de contacto (WhatsApp o mail), 44px. Con `href: null` —sin mail
@@ -63,21 +61,27 @@ function IdentityCell({ customer, onOpenDetail }: { customer: StoreCustomer; onO
 /** Los dos botones de contacto + el aviso de baja. Compartido entre mobile y `lg`. */
 function ContactCell({
   customer,
-  waHref,
+  storeName,
+  storeSlug,
+  activeCoupons,
   mailHref,
 }: {
   customer: StoreCustomer
-  waHref: string | null
+  storeName: string
+  storeSlug: string
+  activeCoupons: Coupon[]
   mailHref: string | null
 }) {
   const optedOut = customer.marketingOptOutAt !== null
   return (
     <div className="flex items-center gap-2">
       {optedOut ? <StatusPill tone="neutral">Sin promos</StatusPill> : null}
-      <ContactIconButton
-        href={waHref}
-        label={optedOut ? `${customer.displayName} se dio de baja de promos` : `Escribirle a ${customer.displayName} por WhatsApp`}
-        icon={<WhatsApp className="size-4" aria-hidden />}
+      <CouponWhatsappMenu
+        customer={customer}
+        storeName={storeName}
+        storeSlug={storeSlug}
+        activeCoupons={activeCoupons}
+        disabled={optedOut}
       />
       <ContactIconButton
         href={mailHref}
@@ -113,16 +117,25 @@ export function CustomerRow({
   storeName,
   storeSlug,
   currency,
+  activeCoupons = [],
   onOpenDetail,
 }: {
   customer: StoreCustomer
   storeName: string
   storeSlug: string
   currency: string
+  /**
+   * Los cupones `active` del local, para el tercer mensaje de WhatsApp
+   * (§5.5.1, T4B). `page.tsx` y `customer-directory.tsx` (T2A) ya arman y
+   * pasan esta prop de punta a punta (`getCouponsForStore` → filtro por
+   * `status` → prop). El default `[]` queda como red: si algún día se
+   * renderiza `CustomerRow` sin pasarla, el botón de WhatsApp se comporta
+   * igual que antes de este cambio (el menú no se ofrece sin cupones).
+   */
+  activeCoupons?: Coupon[]
   onOpenDetail: () => void
 }) {
   const optedOut = customer.marketingOptOutAt !== null
-  const waHref = optedOut ? null : whatsappHref(customer.phoneE164, buildCustomerWhatsappMessage(customer, storeName, storeSlug))
   const mailHref = optedOut || !customer.email ? null : `mailto:${customer.email}`
 
   return (
@@ -142,7 +155,7 @@ export function CustomerRow({
           <span aria-hidden>·</span>
           <span className="tabular">{relativeLastOrderLabel(customer.daysSinceLastOrder)}</span>
         </p>
-        <ContactCell customer={customer} waHref={waHref} mailHref={mailHref} />
+        <ContactCell customer={customer} storeName={storeName} storeSlug={storeSlug} activeCoupons={activeCoupons} mailHref={mailHref} />
       </div>
 
       {/* `lg`: las seis columnas de §5.5, ordenada por gastado desc (ya viene ordenada del controller). */}
@@ -154,7 +167,7 @@ export function CustomerRow({
           <Price cents={customer.avgTicketCents} currency={currency} />
         </p>
         <p className="text-muted-foreground tabular text-sm">{relativeLastOrderLabel(customer.daysSinceLastOrder)}</p>
-        <ContactCell customer={customer} waHref={waHref} mailHref={mailHref} />
+        <ContactCell customer={customer} storeName={storeName} storeSlug={storeSlug} activeCoupons={activeCoupons} mailHref={mailHref} />
       </div>
     </div>
   )
