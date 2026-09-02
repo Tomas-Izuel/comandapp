@@ -50,6 +50,34 @@ MOTION GRAMMAR: Una sola familia de easing (--ease-out-expo) y tres duraciones
 (--dur-fast/base/slow). Todo arranca desde un estado ya visible, así que con
 prefers-reduced-motion el resultado final es idéntico y nada queda oculto. Nada
 entra al hacer scroll: una carta que se revela de a poco es una carta que tarda.
+LANDING (/): la cara de la PLATAFORMA, no de un local. Modo Persuade. Tesis
+(2026-09-02): LA PÁGINA ES LA DEMO. No describe el producto: deja mirar UN
+pedido —el #A2A1 de src/lib/landing.ts— cruzar la página entera, y cada sección
+es una estación de ese recorrido con una prueba interactiva que usa la MISMA
+aritmética que cobra el producto (ETA con scaleUpInt, envío con delivery.ts,
+precio con PRICING). Gramática de motion propia, y es la excepción declarada a la
+regla de arriba: (1) NINGÚN texto, título ni tarjeta entra al hacer scroll — eso
+es la firma de la landing genérica y está prohibido; (2) lo único que se mueve
+son estados del producto dramatizados —un mensaje que llega, un paso que se
+cumple, un número que cambia, una captura que se intercambia—; (3) cada demo se
+reproduce UNA vez cuando entra en pantalla y tiene un control para repetirla;
+(4) el hero tiene UN solo momento: el STORYBOARD del flujo (hero-flow.tsx), un
+pedido de delivery contado en cinco cuadros que entran por la derecha y salen
+por la izquierda —el cursor toca el "+", el pedido viaja a la hoja de pago y
+queda pagado, la sartén cocina, sale listo, la moto llega a la puerta— con una
+frase por cuadro, que se reproduce una vez al cargar y se puede repetir; es la
+única escena ilustrada de la página (sartén, moto, cursor son ÍCONOS trazados,
+no fotos ni emoji) y la única con un pedido distinto del #A2A1, porque tiene que
+terminar en la puerta del cliente; el titular es ESTÁTICO —dos motions al cargar
+compiten, y la que explica el producto es la escena, no el título—, así que GSAP
+se fue de la landing; (5) con
+prefers-reduced-motion toda demo renderiza su estado final de entrada, sin
+temporizadores, y nada queda oculto. Misma familia de easing (--ease-out-expo),
+mismas duraciones, más --dur-beat como cadencia entre eventos de una escena. Las
+islas cliente son las demos y solo las demos; el resto de la página sigue siendo
+Server Components y la ruta sigue siendo estática. Cero evidencia inventada:
+toda escena dramatizada lleva DEMO_SCENE_CAPTION y toda captura lleva
+SCREENSHOT_CAPTION.
 OPERATE: /admin y /backoffice NO heredan esta composición. Comparten tokens,
 tipografía y controles; la vara ahí son los KDS de cocina y los paneles de
 administración, no la app de pedido. Densidad y retomar-el-hilo por encima de

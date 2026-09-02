@@ -53,3 +53,6 @@ next-env.d.ts
 
 # Generado por el CLI de Supabase
 supabase/.temp/
+
+# Log efímero de una ronda de decisión de impeccable: es de esa corrida, no del repo.
+.impeccable/questions/
