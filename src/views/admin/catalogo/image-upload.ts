@@ -5,6 +5,21 @@ import { compressImage } from '@/views/shared/image-compress'
 
 const BUCKET = 'product-images'
 
+/**
+ * Extensión por el MIME de SALIDA de `compressImage`, nunca por el nombre de
+ * archivo de origen: desde que esa función puede devolver WebP o PNG (logo
+ * con alfa), tomar `file.name.split('.').pop()` mentiría —un logo `.png` que
+ * salió comprimido a `.webp` terminaría con extensión `.png`— y además
+ * `split('.').pop()` sobre un nombre sin punto devuelve el nombre entero, un
+ * path raro en Storage. `jpg` es el único fallback: es el formato por default
+ * de `compressImage` para todo lo que no tiene alfa.
+ */
+const EXTENSION_BY_MIME: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+}
+
 /** Mismo cómputo que `productImageUrl()` en catalog.model.ts, para el preview del browser. */
 export function productImagePublicUrl(imagePath: string | null): string | null {
   if (!imagePath) return null
@@ -50,7 +65,7 @@ export async function uploadProductImage(
       return { ok: false, error: 'La foto sigue pesando más de 5MB después de comprimirla. Probá con otra.' }
     }
 
-    const extension = compressed.type === 'image/jpeg' ? 'jpg' : (file.name.split('.').pop() ?? 'jpg')
+    const extension = EXTENSION_BY_MIME[compressed.type] ?? 'jpg'
     // `randomUuidV4` y no `crypto.randomUUID()`: el dueño del local sube las
     // fotos DESDE EL CELULAR, y si entra por IP de LAN (http://192.168.x.x)
     // el contexto no es seguro y `crypto.randomUUID` no existe.

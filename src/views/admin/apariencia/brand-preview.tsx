@@ -39,14 +39,39 @@ export function BrandPreview({
   storeSlug,
   storeName,
   className,
+  reloadToken = 0,
 }: {
   branding: Branding
   storeSlug: string
   storeName: string
   className?: string
+  /**
+   * Se incrementa en `branding-form.tsx` recién cuando `upsertBrandingAction`
+   * devuelve `ok: true`. El `<iframe>` es la vitrina real: el logo, la
+   * portada y el favicon los pinta el SERVIDOR al cargar esa página, y el
+   * `postMessage` de branding de abajo solo cubre color/tipografía/radio/
+   * densidad. Sin esto, borrar el logo y guardar no cambia nada acá adentro
+   * — el iframe nunca se recarga — y el dueño concluye que el borrado no
+   * funcionó (ver 00-architecture.md de este hotfix). Usarlo como parte de la
+   * `key` remonta el iframe entero, que es lo único que fuerza un pedido
+   * nuevo al servidor con el estado recién guardado.
+   */
+  reloadToken?: number
 }) {
   const [expanded, setExpanded] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  // Rastrea a qué `reloadToken` corresponde el `loaded` actual. Cuando no
+  // coinciden significa que se pidió una recarga después del último render:
+  // ajustar `loaded` a `false` ACÁ (durante el render, no en un efecto — el
+  // patrón que React docs llaman "adjusting state when a prop changes") es
+  // lo que evita el cascading-render que dispararía un `useEffect` con este
+  // mismo `setState`, y no reabre un loop porque en el próximo render ya
+  // coinciden.
+  const [loadedForToken, setLoadedForToken] = useState(reloadToken)
+  if (loadedForToken !== reloadToken) {
+    setLoadedForToken(reloadToken)
+    setLoaded(false)
+  }
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   // Recién después de `onLoad` el bridge del lado de adentro ya montó su
@@ -56,6 +81,14 @@ export function BrandPreview({
   // vista previa no empieza mostrando el branding GUARDADO (el que trae el
   // `<style>` del layout del lado del servidor) mientras el dueño ya tiene
   // cambios sin guardar en pantalla.
+  //
+  // Esto también cubre la recarga: la `key` de abajo remonta el `<iframe>`
+  // en cuanto cambia `reloadToken`, pero `BrandPreview` en sí NO se remonta,
+  // así que sin el ajuste de arriba `loaded` seguiría en `true` de la carga
+  // vieja — este efecto le mandaría el branding al `contentWindow` que React
+  // acaba de reemplazar, y el mensaje se pierde sin error porque del lado
+  // nuevo todavía no hay nadie escuchando. `onLoad` del iframe nuevo vuelve a
+  // poner `loaded` en `true` cuando el bridge ya montó.
   useEffect(() => {
     if (!loaded) return
     iframeRef.current?.contentWindow?.postMessage(
@@ -104,6 +137,7 @@ export function BrandPreview({
         )}
       >
         <iframe
+          key={reloadToken}
           ref={iframeRef}
           src={`/${storeSlug}?${PREVIEW_QUERY_PARAM}=${PREVIEW_QUERY_VALUE}`}
           title={`Vista previa de ${storeName || 'tu local'}`}

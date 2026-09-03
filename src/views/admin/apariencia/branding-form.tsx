@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useId, useMemo, useRef, useTransition } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import { Controller, useForm, useWatch, type FieldPath, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
@@ -115,7 +116,13 @@ export function BrandingForm({
   storeName: string
   initialBranding: Branding
 }) {
+  const router = useRouter()
   const [pending, startTransition] = useTransition()
+  // Cuenta guardados exitosos. `BrandPreview` lo usa como parte de la `key`
+  // del `<iframe>`: incrementarlo lo remonta, que es lo único que fuerza un
+  // pedido nuevo al servidor con el logo/portada/favicon recién guardados
+  // (ver el comentario largo en brand-preview.tsx).
+  const [reloadToken, setReloadToken] = useState(0)
   const {
     control,
     handleSubmit,
@@ -160,6 +167,18 @@ export function BrandingForm({
         return
       }
       toast.success('Apariencia guardada')
+      // Los dos van DENTRO de la transición, después del toast: así el botón
+      // "Guardar apariencia" sigue con el spinner prendido mientras el
+      // Server Component y el iframe de la vista previa se ponen al día, en
+      // vez de apagarse antes de que la evidencia visible refleje el guardado.
+      // `router.refresh()` vuelve a pedir el RSC (así `initialBranding` deja
+      // de quedarse en lo que había ANTES de este guardado) sin resetear el
+      // formulario ni perder lo que el dueño tiene tipeado. `setReloadToken`
+      // remonta el iframe de `BrandPreview`, que es la vitrina real: sin
+      // esto el logo/portada/favicon que pinta el servidor al cargar la
+      // página quedan congelados en el primer render del panel.
+      router.refresh()
+      setReloadToken((token) => token + 1)
     })
   })
 
@@ -471,7 +490,13 @@ export function BrandingForm({
         </Button>
       </div>
 
-      <BrandPreview branding={branding} storeSlug={storeSlug} storeName={storeName} className="order-1 lg:order-2" />
+      <BrandPreview
+        branding={branding}
+        storeSlug={storeSlug}
+        storeName={storeName}
+        reloadToken={reloadToken}
+        className="order-1 lg:order-2"
+      />
     </form>
   )
 }
