@@ -32,10 +32,18 @@ export function ImageField({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
+  // Feedback mudo de "Quitar": la miniatura se vacía pero nada le dice al
+  // dueño que el borrado todavía no viajó — el botón "Guardar apariencia"
+  // está abajo de todo el formulario, fuera de la vista en mobile. Este
+  // estado vive un solo pulso (se apaga al elegir o subir otra imagen) y se
+  // anuncia con `aria-live` en vez de un toast: no es un evento que merezca
+  // interrumpir, es un recordatorio que se lee si el dueño mira para abajo.
+  const [justRemoved, setJustRemoved] = useState(false)
   const inputId = useId()
 
   async function handleFile(file: File | undefined) {
     if (!file) return
+    setJustRemoved(false)
     setUploading(true)
     const result = await uploadProductImage(storeId, file)
     setUploading(false)
@@ -44,6 +52,11 @@ export function ImageField({
       return
     }
     onChange(productImagePublicUrl(result.path))
+  }
+
+  function handleRemove() {
+    onChange(null)
+    setJustRemoved(true)
   }
 
   return (
@@ -77,13 +90,21 @@ export function ImageField({
               {value ? 'Cambiar' : 'Subir'}
             </Button>
             {value ? (
-              <Button type="button" variant="ghost" size="sm" onClick={() => onChange(null)} className="gap-1.5">
+              <Button type="button" variant="ghost" size="sm" onClick={handleRemove} className="gap-1.5">
                 <X className="size-3.5" />
                 Quitar
               </Button>
             ) : null}
           </div>
           {hint ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
+          {/* La región vive SIEMPRE en el DOM, vacía: un lector de pantalla
+              registra las live regions al montarlas, así que una que aparece
+              recién junto con su texto se anuncia de forma inconsistente.
+              `empty:hidden` la saca del layout mientras no dice nada, para
+              que no deje un hueco del `gap` de la columna. */}
+          <p role="status" aria-live="polite" className="text-muted-foreground text-xs empty:hidden">
+            {justRemoved ? 'Quitada. Guardá apariencia para confirmar el cambio.' : null}
+          </p>
         </div>
       </div>
       <input
