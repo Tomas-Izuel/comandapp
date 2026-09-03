@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { formatCentsCompact } from '@/lib/money'
 import { DEMO_SCENE_CAPTION, HERO_FLOW, HERO_FLOW_DURATION_MS, HERO_ORDER } from '@/lib/landing'
 import { Panel, PhotoFrame, StatusPill, StepMark, iconButtonClass } from '@/views/shared/surfaces'
+import { SCENE_VISIBILITY_THRESHOLDS, isSceneVisible } from '@/views/landing/scene-visibility'
 
 /**
  * El storyboard del hero (ronda 5, a mano del hilo principal).
@@ -385,18 +386,23 @@ export function HeroFlow() {
       (entries) => {
         const entry = entries[0]
         if (!entry) return
-        intersectingRef.current = entry.isIntersecting
-        if (entry.isIntersecting) {
+        // "En pantalla" para arrancar/retomar es el 60% del criterio de
+        // `scene-visibility`; para pausar seguimos usando `isIntersecting` tal
+        // cual (ratio 0, se fue del todo) — así no hay loop de pausa apenas el
+        // bloque baja de 60% sin haberse ido de la vista.
+        const visible = isSceneVisible(entry)
+        intersectingRef.current = visible
+        if (visible) {
           if (phaseRef.current === 'idle') {
             play()
           } else {
             tryAutoResume()
           }
-        } else if (phaseRef.current === 'playing') {
+        } else if (!entry.isIntersecting && phaseRef.current === 'playing') {
           pause(true)
         }
       },
-      { threshold: 0.3 },
+      { threshold: SCENE_VISIBILITY_THRESHOLDS },
     )
     observer.observe(node)
     return () => observer.disconnect()

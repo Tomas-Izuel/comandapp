@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore }
 import { Check, RotateCcw } from 'lucide-react'
 import { DEMO_EVENTS, DEMO_SCENE_CAPTION } from '@/lib/landing'
 import { cn } from '@/lib/utils'
+import { SCENE_VISIBILITY_THRESHOLDS, isSceneVisible } from '@/views/landing/scene-visibility'
 
 /**
  * Cadencia entre eventos de la escena. Tiene que coincidir con `--dur-beat`
@@ -108,12 +109,13 @@ export function EventsDemo() {
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting) {
+        const entry = entries[0]
+        if (entry && isSceneVisible(entry)) {
           play()
           observer.disconnect()
         }
       },
-      { threshold: 0.4 },
+      { threshold: SCENE_VISIBILITY_THRESHOLDS },
     )
     observer.observe(node)
     return () => observer.disconnect()

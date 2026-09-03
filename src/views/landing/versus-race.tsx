@@ -8,6 +8,7 @@ import { Panel, StatusPill } from '@/views/shared/surfaces'
 import { OrderSteps } from '@/views/shared/order-status'
 import type { OrderStatus } from '@/models/schemas/order.schema'
 import { DEMO_ORDER, DEMO_SCENE_CAPTION, DEMO_THREAD, type DemoMessage } from '@/lib/landing'
+import { SCENE_VISIBILITY_THRESHOLDS, isSceneVisible } from '@/views/landing/scene-visibility'
 
 /**
  * "La carrera": el mismo pedido corriendo por los dos caminos a la vez, con
@@ -326,12 +327,12 @@ export function VersusRace() {
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
+        if (entries.some((entry) => isSceneVisible(entry))) {
           observer.disconnect()
           play()
         }
       },
-      { threshold: 0.4 },
+      { threshold: SCENE_VISIBILITY_THRESHOLDS },
     )
     observer.observe(node)
     return () => observer.disconnect()
