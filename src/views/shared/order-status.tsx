@@ -46,6 +46,9 @@ export function OrderSteps({
   deliveryMethod,
   courierFirstName,
   timestamps,
+  previousStatus,
+  live = false,
+  announce = true,
   className,
 }: {
   status: OrderStatus
@@ -58,6 +61,28 @@ export function OrderSteps({
    */
   courierFirstName?: string | null
   timestamps?: Partial<Record<OrderStatus, string>>
+  /**
+   * Opt-in al motion de TRANSICIÓN (el segundo momento autorizado del
+   * producto, ver globals.css). Pasarlo —aunque sea `null`— prende el tramo
+   * que se llena entre pasos; cuando además trae el estado anterior y difiere
+   * del actual, los pasos que cambiaron de forma se estampan / aterrizan una
+   * sola vez. Quien lo pasa es el dueño de saber qué estado había antes: este
+   * componente no tiene memoria a propósito, así se puede seguir renderizando
+   * del lado del servidor. Sin el prop, se comporta exactamente como antes.
+   */
+  previousStatus?: OrderStatus | null
+  /**
+   * Anillo que respira en el paso actual mientras el pedido sigue en curso:
+   * "esto está vivo". Solo para superficies que se actualizan solas —el
+   * seguimiento del cliente—, no para historiales ni demos.
+   */
+  live?: boolean
+  /**
+   * La región `aria-live` propia. En `false` para que un consumidor que ya
+   * anuncia el cambio de estado con una frase entera no lo haga sonar dos
+   * veces.
+   */
+  announce?: boolean
   className?: string
 }) {
   if (status === 'cancelled') {
@@ -70,6 +95,13 @@ export function OrderSteps({
 
   const steps = deliveryMethod === 'delivery' ? DELIVERY_STEPS : PICKUP_STEPS
   const currentIndex = steps.findIndex((step) => step === status)
+  const animated = previousStatus !== undefined
+  // `-1` cuando el anterior era `pending` (o no está en la lista): todos los
+  // pasos venían huecos, así que el primero que se llena cuenta como cambio.
+  const previousIndex =
+    animated && previousStatus !== null && previousStatus !== status
+      ? steps.findIndex((step) => step === previousStatus)
+      : null
 
   /**
    * Con delivery, "Listo" ambiguo: para el cliente lee como "andá a
@@ -89,12 +121,28 @@ export function OrderSteps({
     <div className={className}>
       <ol className="flex flex-col" aria-label="Estado del pedido">
         {steps.map((step, index) => {
-          const state = currentIndex > index ? 'done' : currentIndex === index ? 'current' : 'todo'
+          const state = stepState(currentIndex, index)
+          const changed = previousIndex !== null && stepState(previousIndex, index) !== state
           const isLast = index === steps.length - 1
           return (
             <li key={step} className="flex gap-3">
               <div className="flex flex-col items-center">
-                <StepMark state={state} />
+                {/* `key={state}` remonta el marcador cuando cambia de forma:
+                    así la animación corre en CADA transición y no solo la
+                    primera vez que la clase aparece. El anillo vive en un
+                    `::after` del wrapper —`StepMark` no se toca— para que el
+                    punto en sí quede quieto mientras el anillo respira. */}
+                <span
+                  key={state}
+                  className={cn(
+                    'flex',
+                    changed && state === 'done' && 'step-complete',
+                    changed && state === 'current' && 'step-arrive',
+                    live && state === 'current' && 'step-live',
+                  )}
+                >
+                  <StepMark state={state} />
+                </span>
                 {/* El tramo que une dos pasos se pinta cumplido solo cuando el
                     de ABAJO ya pasó: si se pintara desde el actual, la línea
                     prometería un paso que la cocina todavía no dio. */}
@@ -102,8 +150,9 @@ export function OrderSteps({
                   <span
                     className={cn(
                       'w-0.5 flex-1 rounded-pill',
-                      currentIndex > index ? 'bg-primary' : 'bg-border',
+                      animated ? 'step-connector' : currentIndex > index ? 'bg-primary' : 'bg-border',
                     )}
+                    data-done={animated ? currentIndex > index : undefined}
                     aria-hidden
                   />
                 ) : null}
@@ -127,11 +176,17 @@ export function OrderSteps({
           )
         })}
       </ol>
-      <p className="sr-only" aria-live="polite">
-        {labelFor(status)}
-      </p>
+      {announce ? (
+        <p className="sr-only" aria-live="polite">
+          {labelFor(status)}
+        </p>
+      ) : null}
     </div>
   )
+}
+
+function stepState(currentIndex: number, index: number): 'done' | 'current' | 'todo' {
+  return currentIndex > index ? 'done' : currentIndex === index ? 'current' : 'todo'
 }
 
 /**
